@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"archive/tar"
+	"bytes"
 	"strings"
 	"testing"
 
+	"github.com/canonical/olav/internal/layer"
 	"github.com/canonical/olav/internal/oci"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -178,11 +181,121 @@ func TestLayerLoadingOverlayAndSelection(t *testing.T) {
 	assertViewFits(t, view, m.width, m.height)
 }
 
+func TestSpacePagesPreview(t *testing.T) {
+	m := New(simpleLayoutWithData([]byte(strings.Repeat("line\n", 40))))
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	before := m.preview.Scroll
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if m.preview.Scroll <= before {
+		t.Fatalf("expected preview to page down, before=%d after=%d", before, m.preview.Scroll)
+	}
+}
+
+func TestSpaceTogglesLayerFolder(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.focus = focusLayer
+	m.currentLayer = &layer.Layer{Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}, Entries: map[string]*layer.Entry{}}
+	dir := &layer.Entry{Name: "etc", Path: "/etc", Type: tar.TypeDir, Parent: m.currentLayer.Root}
+	m.currentLayer.Root.Children = []*layer.Entry{dir}
+	m.currentLayer.Entries["/"] = m.currentLayer.Root
+	m.currentLayer.Entries["/etc"] = dir
+	m.layerExpanded = map[string]bool{"/": true, "/etc": true}
+	m.rebuildLayerRows()
+	m.selectedLayerRow = m.indexOfLayer("/etc")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if m.layerExpanded["/etc"] {
+		t.Fatal("expected /etc to collapse")
+	}
+}
+
+func TestLayerLoadedSuccessAndStaleResult(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	blob := &oci.Node{Name: "abc", Path: "/blobs/sha256/abc", Data: tinyTar(t), Parent: m.layout.Root, Blob: &oci.BlobInfo{MediaType: "application/vnd.oci.image.layer.v1.tar"}}
+	m.layout.Root.Children = append(m.layout.Root.Children, blob)
+	m.rebuildOCIRows()
+	m.selectedOCI = m.indexOfOCI(blob.Path)
+	m.loadingLayerPath = blob.Path
+	lt := &layer.Layer{Title: blob.Path, Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}, Entries: map[string]*layer.Entry{"/": {Name: "/", Path: "/", Type: tar.TypeDir}}}
+
+	updated, _ := m.Update(layerLoadedMsg{path: blob.Path, layer: lt})
+	m = updated.(Model)
+	if m.currentLayer != lt {
+		t.Fatal("expected current layer to be applied")
+	}
+
+	m.selectedOCI = m.indexOfOCI("/index.json")
+	stale := &layer.Layer{Title: "stale", Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}, Entries: map[string]*layer.Entry{"/": {Name: "/", Path: "/", Type: tar.TypeDir}}}
+	updated, _ = m.Update(layerLoadedMsg{path: blob.Path, layer: stale})
+	m = updated.(Model)
+	if m.currentLayer == stale {
+		t.Fatal("stale layer result should not replace current view")
+	}
+}
+
+func TestSearchPromptAndHelpFooter(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	m = updated.(Model)
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[len(lines)-2], "/i") {
+		t.Fatalf("expected search prompt on message line:\n%s", view)
+	}
+	if !strings.Contains(lines[len(lines)-1], "Tab focus") {
+		t.Fatalf("expected help footer:\n%s", view)
+	}
+}
+
+func TestQuestionMarkSetsMessage(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = updated.(Model)
+	if !strings.Contains(m.message, "Keys:") {
+		t.Fatalf("expected extended help message, got %q", m.message)
+	}
+}
+
 func simpleLayout() *oci.Layout {
+	return simpleLayoutWithData([]byte(`{"schemaVersion":2}`))
+}
+
+func simpleLayoutWithData(data []byte) *oci.Layout {
 	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
-	file := &oci.Node{Name: "index.json", Path: "/index.json", Data: []byte(`{"schemaVersion":2}`), Parent: root}
+	file := &oci.Node{Name: "index.json", Path: "/index.json", Data: data, Parent: root}
 	root.Children = []*oci.Node{file}
 	return &oci.Layout{InputPath: "fixture", Root: root, Files: map[string]*oci.Node{"/": root, "/index.json": file}}
+}
+
+func tinyTar(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "file", Typeflag: tar.TypeReg, Size: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func previewLine(view, marker string) string {
