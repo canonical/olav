@@ -1,6 +1,6 @@
-# olav
+# OCI-Layout Archive Visualizer
 
-`olav` is a terminal OCI image layout visualizer.
+`olav` is the command-line interface for OCI-Layout Archive Visualizer.
 
 It accepts an OCI layout directory or tar archive and opens a split-pane TUI for browsing layout files, previewing text/JSON blobs, inspecting layer tarballs, and exporting selected files.
 
