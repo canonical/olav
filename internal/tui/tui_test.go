@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/canonical/olav/internal/oci"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -110,6 +111,78 @@ func TestLongPreviewKeepsBottomBorder(t *testing.T) {
 	if !strings.Contains(view, "╰") || !strings.Contains(view, "╯") {
 		t.Fatalf("expected bottom border corners to be visible:\n%s", view)
 	}
+}
+
+func TestFooterAlwaysShowsHelpAndMessage(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.message = "exported to olav-export/example"
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if !strings.Contains(lines[len(lines)-1], "Tab focus") {
+		t.Fatalf("expected help on bottom line:\n%s", view)
+	}
+	if !strings.Contains(lines[len(lines)-2], "exported to") {
+		t.Fatalf("expected message on second bottom line:\n%s", view)
+	}
+	assertViewFits(t, view, m.width, m.height)
+}
+
+func TestSpaceTogglesOCIFolder(t *testing.T) {
+	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
+	dir := &oci.Node{Name: "dir", Path: "/dir", IsDir: true, Parent: root}
+	file := &oci.Node{Name: "file", Path: "/dir/file", Data: []byte("x"), Parent: dir}
+	root.Children = []*oci.Node{dir}
+	dir.Children = []*oci.Node{file}
+	layout := &oci.Layout{InputPath: "fixture", Root: root, Files: map[string]*oci.Node{"/": root, "/dir": dir, "/dir/file": file}}
+	m := New(layout)
+	m.width = 80
+	m.height = 16
+	m.focus = focusOCI
+	m.ociExpanded["/dir"] = true
+	m.rebuildOCIRows()
+	m.selectedOCI = m.indexOfOCI("/dir")
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(Model)
+	if m.ociExpanded["/dir"] {
+		t.Fatalf("expected /dir to collapse")
+	}
+	if m.selectedOCINodePath() != "/dir" {
+		t.Fatalf("expected selection to remain on /dir, got %s", m.selectedOCINodePath())
+	}
+}
+
+func TestLayerLoadingOverlayAndSelection(t *testing.T) {
+	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
+	blob := &oci.Node{Name: "abc", Path: "/blobs/sha256/abc", Data: []byte("not-a-tar"), Parent: root, Blob: &oci.BlobInfo{MediaType: "application/vnd.oci.image.layer.v1.tar"}}
+	root.Children = []*oci.Node{blob}
+	layout := &oci.Layout{InputPath: "fixture", Root: root, Files: map[string]*oci.Node{"/": root, "/blobs/sha256/abc": blob}}
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.selectOCI(1)
+
+	if m.loadingLayerPath != blob.Path {
+		t.Fatalf("expected loading path %q, got %q", blob.Path, m.loadingLayerPath)
+	}
+	if m.selectedOCINodePath() != blob.Path {
+		t.Fatalf("expected selection to remain on blob")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Extracting tarball.") || !strings.Contains(view, "This can take a while") {
+		t.Fatalf("expected centered extraction overlay:\n%s", view)
+	}
+	assertViewFits(t, view, m.width, m.height)
+}
+
+func simpleLayout() *oci.Layout {
+	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
+	file := &oci.Node{Name: "index.json", Path: "/index.json", Data: []byte(`{"schemaVersion":2}`), Parent: root}
+	root.Children = []*oci.Node{file}
+	return &oci.Layout{InputPath: "fixture", Root: root, Files: map[string]*oci.Node{"/": root, "/index.json": file}}
 }
 
 func previewLine(view, marker string) string {

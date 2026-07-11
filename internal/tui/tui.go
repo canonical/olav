@@ -25,10 +25,11 @@ const (
 type Model struct {
 	layout *oci.Layout
 
-	width  int
-	height int
-	focus  focus
-	status string
+	width   int
+	height  int
+	focus   focus
+	message string
+	pending tea.Cmd
 
 	ociRows      []treeRow
 	selectedOCI  int
@@ -41,11 +42,20 @@ type Model struct {
 
 	layerCache       map[string]*layer.Layer
 	currentLayer     *layer.Layer
+	loadingLayerPath string
 	layerRows        []layerRow
 	selectedLayerRow int
 	layerExpanded    map[string]bool
 	innerPreview     *preview.Preview
 }
+
+type layerLoadedMsg struct {
+	path  string
+	layer *layer.Layer
+	err   error
+}
+
+const helpText = "Tab focus | j/k move | Space toggle/page | Enter open | / search | p pretty | w wrap | # lines | e export | q quit"
 
 type treeRow struct {
 	node  *oci.Node
@@ -72,7 +82,6 @@ func New(layout *oci.Layout) Model {
 		ociExpanded:   map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
 		layerCache:    map[string]*layer.Layer{},
 		layerExpanded: map[string]bool{"/": true},
-		status:        "Tab focus | j/k move | / search | p pretty | w wrap | # lines | e export | ? help | q quit",
 	}
 	m.rebuildOCIRows()
 	m.selectOCI(0)
@@ -87,6 +96,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
+	case layerLoadedMsg:
+		m.loadingLayerPath = ""
+		if msg.err != nil {
+			if m.selectedOCINodePath() != msg.path {
+				m.message = "Failed to open " + msg.path + ": " + msg.err.Error()
+				return m, nil
+			}
+			p := preview.New(msg.path, []byte("Failed to open layer: "+msg.err.Error()), false)
+			m.preview = &p
+			m.message = "Failed to open " + msg.path + ": " + msg.err.Error()
+			return m, nil
+		}
+		m.layerCache[msg.path] = msg.layer
+		if m.selectedOCINodePath() != msg.path {
+			m.message = "Opened " + msg.path
+			return m, nil
+		}
+		m.currentLayer = msg.layer
+		m.layerExpanded = map[string]bool{"/": true}
+		m.rebuildLayerRows()
+		m.selectLayer(0)
+		m.message = "Opened " + msg.path
+		return m, nil
 	case tea.KeyMsg:
 		key := msg.String()
 		if m.searchMode {
@@ -96,14 +128,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "?":
-			m.status = "Keys: Tab focus, Enter expand/open, j/k move, g/G top/bottom, / search, n/N matches, p pretty, w wrap, # lines, e export, q quit"
+			m.message = "Keys: Tab focus, Space toggle/page, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
 		case "tab":
 			m.nextFocus()
 		case "/":
 			m.searchMode = true
 			m.searchTarget = m.focus
 			m.searchQuery = ""
-			m.status = "/"
+			m.message = "/"
 		case "n":
 			m.nextMatch(1)
 		case "N":
@@ -142,7 +174,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.goLineStart()
 		case "$":
 			m.goLineEnd()
-		case "pgdown", " ", "f":
+		case " ":
+			if m.focus == focusOCI || m.focus == focusLayer {
+				m.toggleExpandCollapse()
+			} else {
+				m.scrollPreview(m.previewHeight())
+			}
+		case "pgdown", "f":
 			m.scrollPreview(m.previewHeight())
 		case "pgup", "b":
 			m.scrollPreview(-m.previewHeight())
@@ -152,41 +190,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scrollPreview(-m.previewHeight() / 2)
 		}
 	}
-	return m, nil
+	cmd := m.pending
+	m.pending = nil
+	return m, cmd
 }
 
 func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return ""
 	}
-	bodyH := max(1, m.height-3)
+	bodyH := max(1, m.height-4)
 	header := fixedLine("OCI-Layout Archive Visualizer (olav) "+m.layout.InputPath, m.width)
-	status := m.status
+	message := m.message
 	if m.searchMode {
-		status = "/" + m.searchQuery
+		message = "/" + m.searchQuery
 	}
-	footer := mutedStyle.Render(fixedLine(status, m.width))
+	messageLine := mutedStyle.Render(fixedLine(message, m.width))
+	helpLine := mutedStyle.Render(fixedLine(helpText, m.width))
 
 	leftW := max(24, m.width/3)
+	var body string
 	if m.innerPreview != nil && m.currentLayer != nil {
 		midW := max(28, (m.width-leftW)/2)
 		rightW := max(20, m.width-leftW-midW)
-		return lipgloss.JoinVertical(lipgloss.Left, header, lipgloss.JoinHorizontal(lipgloss.Top,
-			m.renderOCI(leftW, bodyH), m.renderLayer(midW, bodyH), m.renderInnerPreview(rightW, bodyH)), footer)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, m.renderOCI(leftW, bodyH), m.renderLayer(midW, bodyH), m.renderInnerPreview(rightW, bodyH))
+	} else {
+		rightW := max(24, m.width-leftW)
+		right := m.renderPreview(rightW, bodyH)
+		if m.currentLayer != nil {
+			right = m.renderLayer(rightW, bodyH)
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, m.renderOCI(leftW, bodyH), right)
 	}
-	rightW := max(24, m.width-leftW)
-	right := m.renderPreview(rightW, bodyH)
-	if m.currentLayer != nil {
-		right = m.renderLayer(rightW, bodyH)
+	if m.loadingLayerPath != "" {
+		body = m.renderOverlay(body, bodyH)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, lipgloss.JoinHorizontal(lipgloss.Top, m.renderOCI(leftW, bodyH), right), footer)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, messageLine, helpLine)
 }
 
 func (m *Model) updateSearch(key string) Model {
 	switch key {
 	case "esc":
 		m.searchMode = false
-		m.status = "search cancelled"
+		m.message = "search cancelled"
 	case "enter":
 		m.searchMode = false
 		m.applySearch()
@@ -212,29 +258,29 @@ func (m *Model) applySearch() {
 		for i, row := range m.ociRows {
 			if strings.Contains(strings.ToLower(oci.DisplayName(row.node)), q) || strings.Contains(strings.ToLower(row.node.Path), q) {
 				m.selectOCI(i)
-				m.status = "matched " + row.node.Path
+				m.message = "matched " + row.node.Path
 				return
 			}
 		}
-		m.status = "no OCI file match for " + m.searchQuery
+		m.message = "no OCI file match for " + m.searchQuery
 	case focusLayer:
 		for i, row := range m.layerRows {
 			if strings.Contains(strings.ToLower(row.entry.Path), q) {
 				m.selectLayer(i)
-				m.status = "matched " + row.entry.Path
+				m.message = "matched " + row.entry.Path
 				return
 			}
 		}
-		m.status = "no layer file match for " + m.searchQuery
+		m.message = "no layer file match for " + m.searchQuery
 	case focusPreview:
 		if m.preview != nil {
 			m.preview.SetSearch(m.searchQuery)
-			m.status = fmt.Sprintf("%d preview matches", len(m.preview.SearchMatches))
+			m.message = fmt.Sprintf("%d preview matches", len(m.preview.SearchMatches))
 		}
 	case focusInnerPreview:
 		if m.innerPreview != nil {
 			m.innerPreview.SetSearch(m.searchQuery)
-			m.status = fmt.Sprintf("%d inner preview matches", len(m.innerPreview.SearchMatches))
+			m.message = fmt.Sprintf("%d inner preview matches", len(m.innerPreview.SearchMatches))
 		}
 	}
 }
@@ -300,20 +346,34 @@ func (m *Model) selectOCI(i int) {
 func (m *Model) openLayer(node *oci.Node) {
 	if cached, ok := m.layerCache[node.Path]; ok {
 		m.currentLayer = cached
+		m.message = "Opened cached layer " + node.Path
 	} else {
-		lt, err := layer.Open(node.Path, node.Blob.MediaType, node.Data)
-		if err != nil {
-			p := preview.New(node.Path, []byte("Failed to open layer: "+err.Error()), false)
-			m.preview = &p
-			m.status = err.Error()
-			return
-		}
-		m.layerCache[node.Path] = lt
-		m.currentLayer = lt
+		m.currentLayer = nil
+		m.preview = nil
+		m.innerPreview = nil
+		m.layerRows = nil
+		m.loadingLayerPath = node.Path
+		m.message = "Opening " + node.Path
+		m.pending = loadLayerCmd(node.Path, node.Blob.MediaType, node.Data)
+		return
 	}
 	m.layerExpanded = map[string]bool{"/": true}
 	m.rebuildLayerRows()
 	m.selectLayer(0)
+}
+
+func loadLayerCmd(path, mediaType string, data []byte) tea.Cmd {
+	return func() tea.Msg {
+		lt, err := layer.Open(path, mediaType, data)
+		return layerLoadedMsg{path: path, layer: lt, err: err}
+	}
+}
+
+func (m *Model) selectedOCINodePath() string {
+	if len(m.ociRows) == 0 || m.selectedOCI < 0 || m.selectedOCI >= len(m.ociRows) {
+		return ""
+	}
+	return m.ociRows[m.selectedOCI].node.Path
 }
 
 func blobMediaType(n *oci.Node) string {
@@ -402,6 +462,44 @@ func (m *Model) collapse() {
 	}
 }
 
+func (m *Model) toggleExpandCollapse() {
+	switch m.focus {
+	case focusOCI:
+		if len(m.ociRows) == 0 {
+			return
+		}
+		n := m.ociRows[m.selectedOCI].node
+		if !n.IsDir {
+			m.message = "selected OCI item is not a folder"
+			return
+		}
+		m.ociExpanded[n.Path] = !m.ociExpanded[n.Path]
+		m.message = toggleMessage(n.Path, m.ociExpanded[n.Path])
+		m.rebuildOCIRows()
+		m.selectedOCI = m.indexOfOCI(n.Path)
+	case focusLayer:
+		if len(m.layerRows) == 0 {
+			return
+		}
+		e := m.layerRows[m.selectedLayerRow].entry
+		if !e.IsDir() {
+			m.message = "selected layer item is not a folder"
+			return
+		}
+		m.layerExpanded[e.Path] = !m.layerExpanded[e.Path]
+		m.message = toggleMessage(e.Path, m.layerExpanded[e.Path])
+		m.rebuildLayerRows()
+		m.selectLayer(m.indexOfLayer(e.Path))
+	}
+}
+
+func toggleMessage(path string, expanded bool) string {
+	if expanded {
+		return "expanded " + path
+	}
+	return "collapsed " + path
+}
+
 func (m *Model) move(delta int) {
 	switch m.focus {
 	case focusOCI:
@@ -462,10 +560,10 @@ func (m *Model) scrollPreviewHoriz(delta int) {
 	width := m.previewContentWidth()
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
 		m.innerPreview.ScrollHoriz(delta, width)
-		m.status = fmt.Sprintf("column %d", m.innerPreview.HScroll+1)
+		m.message = fmt.Sprintf("column %d", m.innerPreview.HScroll+1)
 	} else if m.preview != nil {
 		m.preview.ScrollHoriz(delta, width)
-		m.status = fmt.Sprintf("column %d", m.preview.HScroll+1)
+		m.message = fmt.Sprintf("column %d", m.preview.HScroll+1)
 	}
 }
 
@@ -473,10 +571,10 @@ func (m *Model) goLineStart() {
 	width := m.previewContentWidth()
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
 		m.innerPreview.SetHScroll(0, width)
-		m.status = "column 1"
+		m.message = "column 1"
 	} else if m.focus == focusPreview && m.preview != nil {
 		m.preview.SetHScroll(0, width)
-		m.status = "column 1"
+		m.message = "column 1"
 	}
 }
 
@@ -484,10 +582,10 @@ func (m *Model) goLineEnd() {
 	width := m.previewContentWidth()
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
 		m.innerPreview.SetHScroll(1<<30, width)
-		m.status = fmt.Sprintf("column %d", m.innerPreview.HScroll+1)
+		m.message = fmt.Sprintf("column %d", m.innerPreview.HScroll+1)
 	} else if m.focus == focusPreview && m.preview != nil {
 		m.preview.SetHScroll(1<<30, width)
-		m.status = fmt.Sprintf("column %d", m.preview.HScroll+1)
+		m.message = fmt.Sprintf("column %d", m.preview.HScroll+1)
 	}
 }
 
@@ -501,31 +599,31 @@ func (m *Model) nextMatch(delta int) {
 
 func (m *Model) togglePretty() {
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
-		m.status = m.innerPreview.TogglePretty()
+		m.message = m.innerPreview.TogglePretty()
 		return
 	}
 	if m.preview != nil {
-		m.status = m.preview.TogglePretty()
+		m.message = m.preview.TogglePretty()
 	}
 }
 
 func (m *Model) toggleWrap() {
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
-		m.status = m.innerPreview.ToggleWrap(m.previewHeight(), m.previewContentWidth())
+		m.message = m.innerPreview.ToggleWrap(m.previewHeight(), m.previewContentWidth())
 		return
 	}
 	if m.preview != nil {
-		m.status = m.preview.ToggleWrap(m.previewHeight(), m.previewContentWidth())
+		m.message = m.preview.ToggleWrap(m.previewHeight(), m.previewContentWidth())
 	}
 }
 
 func (m *Model) toggleLineNumbers() {
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
-		m.status = m.innerPreview.ToggleLineNumbers()
+		m.message = m.innerPreview.ToggleLineNumbers()
 		return
 	}
 	if m.preview != nil {
-		m.status = m.preview.ToggleLineNumbers()
+		m.message = m.preview.ToggleLineNumbers()
 	}
 }
 
@@ -536,10 +634,10 @@ func (m *Model) exportSelected() {
 		}
 		dest, err := export.LayerEntry(m.currentLayer.Title, m.layerRows[m.selectedLayerRow].entry)
 		if err != nil {
-			m.status = err.Error()
+			m.message = err.Error()
 			return
 		}
-		m.status = "exported to " + dest
+		m.message = "exported to " + dest
 		return
 	}
 	if len(m.ociRows) == 0 {
@@ -547,10 +645,10 @@ func (m *Model) exportSelected() {
 	}
 	dest, err := export.Node(m.ociRows[m.selectedOCI].node)
 	if err != nil {
-		m.status = err.Error()
+		m.message = err.Error()
 		return
 	}
-	m.status = "exported to " + dest
+	m.message = "exported to " + dest
 }
 
 func (m *Model) renderOCI(width, height int) string {
@@ -640,6 +738,58 @@ func (m *Model) renderInnerPreview(width, height int) string {
 	}
 	lines = append(lines, m.innerPreview.Visible(max(1, contentH-len(lines)), contentW)...)
 	return pane(m.focus == focusInnerPreview, width, height).Render(fixedBlock(lines, contentW, contentH))
+}
+
+func (m *Model) renderOverlay(body string, height int) string {
+	lines := strings.Split(body, "\n")
+	for len(lines) < height {
+		lines = append(lines, strings.Repeat(" ", m.width))
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+
+	overlayW := min(max(48, m.width/2), max(24, m.width-4))
+	contentW := max(1, overlayW-4)
+	overlayLines := []string{
+		centerLine("Extracting tarball.", contentW),
+		centerLine("This can take a while for large tarballs.", contentW),
+	}
+	overlay := pane(false, overlayW, 4).Render(fixedBlock(overlayLines, contentW, contentHeight(4)))
+	olines := strings.Split(overlay, "\n")
+	startY := max(0, (height-len(olines))/2)
+	startX := max(0, (m.width-overlayW)/2)
+
+	for i, line := range olines {
+		y := startY + i
+		if y >= len(lines) {
+			break
+		}
+		lines[y] = overlayLine(lines[y], line, startX, m.width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func overlayLine(base, overlay string, x, width int) string {
+	plain := ansi.Truncate(base, width, "")
+	if ansi.StringWidth(plain) < width {
+		plain += strings.Repeat(" ", width-ansi.StringWidth(plain))
+	}
+	left := ansi.Truncate(plain, x, "")
+	rightStart := x + ansi.StringWidth(overlay)
+	right := ""
+	if rightStart < width {
+		right = ansi.TruncateLeft(plain, rightStart, "")
+	}
+	return ansi.Truncate(left+overlay+right, width, "")
+}
+
+func centerLine(s string, width int) string {
+	if width <= ansi.StringWidth(s) {
+		return ansi.Truncate(s, width, "")
+	}
+	left := (width - ansi.StringWidth(s)) / 2
+	return strings.Repeat(" ", left) + s
 }
 
 func pane(active bool, width, height int) lipgloss.Style {
@@ -747,6 +897,13 @@ func (m *Model) previewContentWidth() int {
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b
