@@ -72,7 +72,7 @@ func New(layout *oci.Layout) Model {
 		ociExpanded:   map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
 		layerCache:    map[string]*layer.Layer{},
 		layerExpanded: map[string]bool{"/": true},
-		status:        "Tab focus | j/k move | / search | p pretty | e export | ? help | q quit",
+		status:        "Tab focus | j/k move | / search | p pretty | w wrap | # lines | e export | ? help | q quit",
 	}
 	m.rebuildOCIRows()
 	m.selectOCI(0)
@@ -96,7 +96,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "?":
-			m.status = "Keys: Tab focus, Enter expand/open, j/k move, g/G top/bottom, / search, n/N matches, p pretty, e export, q quit"
+			m.status = "Keys: Tab focus, Enter expand/open, j/k move, g/G top/bottom, / search, n/N matches, p pretty, w wrap, # lines, e export, q quit"
 		case "tab":
 			m.nextFocus()
 		case "/":
@@ -110,6 +110,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.nextMatch(-1)
 		case "p":
 			m.togglePretty()
+		case "w":
+			m.toggleWrap()
+		case "#":
+			m.toggleLineNumbers()
 		case "e":
 			m.exportSelected()
 		case "enter":
@@ -434,11 +438,11 @@ func (m *Model) goBottom() {
 		m.selectLayer(len(m.layerRows) - 1)
 	case focusPreview:
 		if m.preview != nil {
-			m.preview.ScrollBy(len(m.preview.Lines), m.previewHeight())
+			m.preview.ScrollBy(1<<30, m.previewHeight(), m.previewContentWidth())
 		}
 	case focusInnerPreview:
 		if m.innerPreview != nil {
-			m.innerPreview.ScrollBy(len(m.innerPreview.Lines), m.previewHeight())
+			m.innerPreview.ScrollBy(1<<30, m.previewHeight(), m.previewContentWidth())
 		}
 	}
 }
@@ -448,9 +452,9 @@ func (m *Model) scrollPreview(delta int) {
 		delta = 1
 	}
 	if m.focus == focusInnerPreview && m.innerPreview != nil {
-		m.innerPreview.ScrollBy(delta, m.previewHeight())
+		m.innerPreview.ScrollBy(delta, m.previewHeight(), m.previewContentWidth())
 	} else if m.preview != nil {
-		m.preview.ScrollBy(delta, m.previewHeight())
+		m.preview.ScrollBy(delta, m.previewHeight(), m.previewContentWidth())
 	}
 }
 
@@ -502,6 +506,26 @@ func (m *Model) togglePretty() {
 	}
 	if m.preview != nil {
 		m.status = m.preview.TogglePretty()
+	}
+}
+
+func (m *Model) toggleWrap() {
+	if m.focus == focusInnerPreview && m.innerPreview != nil {
+		m.status = m.innerPreview.ToggleWrap(m.previewHeight(), m.previewContentWidth())
+		return
+	}
+	if m.preview != nil {
+		m.status = m.preview.ToggleWrap(m.previewHeight(), m.previewContentWidth())
+	}
+}
+
+func (m *Model) toggleLineNumbers() {
+	if m.focus == focusInnerPreview && m.innerPreview != nil {
+		m.status = m.innerPreview.ToggleLineNumbers()
+		return
+	}
+	if m.preview != nil {
+		m.status = m.preview.ToggleLineNumbers()
 	}
 }
 

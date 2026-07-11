@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -25,13 +26,15 @@ type Preview struct {
 	Truncated     bool
 	Scroll        int
 	HScroll       int
+	WrapText      bool
+	LineNumbers   bool
 	Search        string
 	SearchMatches []int
 	CurrentMatch  int
 }
 
 func New(title string, data []byte, prettyDefault bool) Preview {
-	p := Preview{Title: title, Raw: data, PrettyEnabled: prettyDefault}
+	p := Preview{Title: title, Raw: data, PrettyEnabled: prettyDefault, WrapText: true, LineNumbers: true}
 	if len(data) > MaxPreviewBytes {
 		p.Raw = data[:MaxPreviewBytes]
 		p.Truncated = true
@@ -73,6 +76,26 @@ func (p *Preview) TogglePretty() string {
 		return "JSON prettification enabled"
 	}
 	return "Raw JSON view enabled"
+}
+
+func (p *Preview) ToggleWrap(height, width int) string {
+	p.WrapText = !p.WrapText
+	if p.WrapText {
+		p.HScroll = 0
+		p.ScrollBy(0, height, width)
+		return "text wrapping enabled"
+	}
+	p.ScrollBy(0, height, width)
+	p.ScrollHoriz(0, width)
+	return "text wrapping disabled"
+}
+
+func (p *Preview) ToggleLineNumbers() string {
+	p.LineNumbers = !p.LineNumbers
+	if p.LineNumbers {
+		return "line numbers enabled"
+	}
+	return "line numbers disabled"
 }
 
 func (p *Preview) render() {
@@ -245,9 +268,9 @@ func (p *Preview) NextMatch(delta int) {
 	p.Scroll = p.SearchMatches[p.CurrentMatch]
 }
 
-func (p *Preview) ScrollBy(delta, height int) {
+func (p *Preview) ScrollBy(delta, height, width int) {
 	p.Scroll += delta
-	max := len(p.Lines) - height
+	max := len(p.displayRows(width)) - height
 	if max < 0 {
 		max = 0
 	}
@@ -260,6 +283,10 @@ func (p *Preview) ScrollBy(delta, height int) {
 }
 
 func (p *Preview) ScrollHoriz(delta, width int) {
+	if p.WrapText {
+		p.HScroll = 0
+		return
+	}
 	p.HScroll += delta
 	max := p.maxLineWidth() - width
 	if max < 0 {
@@ -282,19 +309,65 @@ func (p *Preview) Visible(height, width int) []string {
 	if height < 0 {
 		height = 0
 	}
+	rows := p.displayRows(width)
+	max := len(rows) - height
+	if max < 0 {
+		max = 0
+	}
+	if p.Scroll > max {
+		p.Scroll = max
+	}
+	if p.Scroll < 0 {
+		p.Scroll = 0
+	}
 	end := p.Scroll + height
-	if end > len(p.Lines) {
-		end = len(p.Lines)
+	if end > len(rows) {
+		end = len(rows)
 	}
 	if p.Scroll > end {
 		return nil
 	}
-	lines := p.Lines[p.Scroll:end]
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		out = append(out, p.visibleLine(line, width))
+	return rows[p.Scroll:end]
+}
+
+func (p *Preview) displayRows(width int) []string {
+	if width < 1 {
+		return nil
+	}
+	gutterW := p.gutterWidth(width)
+	textW := width - gutterW
+	if textW < 1 {
+		textW = 1
+	}
+	out := make([]string, 0, len(p.Lines))
+	for i, line := range p.Lines {
+		segments := p.visualSegments(line, textW)
+		if len(segments) == 0 {
+			segments = []string{""}
+		}
+		for j, segment := range segments {
+			out = append(out, p.gutter(i+1, j > 0, gutterW)+segment)
+		}
 	}
 	return out
+}
+
+func (p *Preview) visualSegments(line string, width int) []string {
+	if !p.WrapText {
+		return []string{p.visibleLine(line, width)}
+	}
+	if ansi.StringWidth(line) == 0 {
+		return []string{""}
+	}
+	var segments []string
+	rest := line
+	for ansi.StringWidth(rest) > width {
+		segment := ansi.Truncate(rest, width, "")
+		segments = append(segments, segment)
+		rest = ansi.TruncateLeft(rest, width, "")
+	}
+	segments = append(segments, rest)
+	return segments
 }
 
 func (p *Preview) visibleLine(line string, width int) string {
@@ -307,6 +380,29 @@ func (p *Preview) visibleLine(line string, width int) string {
 	return ansi.Truncate(ansi.TruncateLeft(line, p.HScroll, ""), width, "")
 }
 
+func (p *Preview) gutterWidth(width int) int {
+	if !p.LineNumbers || !p.Text {
+		return 0
+	}
+	digits := len(strconv.Itoa(max(1, len(p.PlainLines))))
+	gutterW := digits + 3
+	if width-gutterW < 1 {
+		return 0
+	}
+	return gutterW
+}
+
+func (p *Preview) gutter(line int, continuation bool, width int) string {
+	if width == 0 {
+		return ""
+	}
+	digits := width - 3
+	if continuation {
+		return strings.Repeat(" ", digits) + " │ "
+	}
+	return fmt.Sprintf("%*d │ ", digits, line)
+}
+
 func (p *Preview) maxLineWidth() int {
 	max := 0
 	for _, line := range p.Lines {
@@ -315,4 +411,11 @@ func (p *Preview) maxLineWidth() int {
 		}
 	}
 	return max
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -22,7 +22,7 @@ func TestViewDoesNotExceedWindow(t *testing.T) {
 	if m.preview == nil {
 		t.Fatal("expected preview")
 	}
-	m.preview.ScrollBy(100, m.previewHeight())
+	m.preview.ScrollBy(100, m.previewHeight(), m.previewContentWidth())
 
 	view := m.View()
 	lines := strings.Split(view, "\n")
@@ -36,7 +36,7 @@ func TestViewDoesNotExceedWindow(t *testing.T) {
 	}
 }
 
-func TestLongRawPreviewUsesHorizontalScroll(t *testing.T) {
+func TestLongRawPreviewWrapsWithLineNumbers(t *testing.T) {
 	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
 	longLine := []byte("alpha-" + strings.Repeat("middle-", 20) + "omega")
 	file := &oci.Node{Name: "config", Path: "/config", Data: longLine, Parent: root}
@@ -53,17 +53,41 @@ func TestLongRawPreviewUsesHorizontalScroll(t *testing.T) {
 	if !strings.Contains(view, "alpha-") {
 		t.Fatalf("expected start of long line in initial viewport:\n%s", view)
 	}
-	if strings.Contains(previewLine(view, "alpha-"), "…") {
-		t.Fatalf("raw preview line should not use ellipsis truncation:\n%s", view)
+	if !strings.Contains(previewLine(view, "alpha-"), "1 │") {
+		t.Fatalf("expected line number gutter in preview:\n%s", view)
 	}
-	if strings.Contains(view, "omega") {
-		t.Fatalf("expected long line end to be outside initial viewport:\n%s", view)
+	if !strings.Contains(view, "  │") {
+		t.Fatalf("expected wrapped continuation gutter:\n%s", view)
+	}
+	if strings.Contains(previewLine(view, "alpha-"), "…") {
+		t.Fatalf("wrapped raw preview line should not use ellipsis truncation:\n%s", view)
+	}
+	assertViewFits(t, view, m.width, m.height)
+}
+
+func TestPreviewToggleWrapAndLineNumbers(t *testing.T) {
+	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
+	longLine := []byte("alpha-" + strings.Repeat("middle-", 20) + "omega")
+	file := &oci.Node{Name: "config", Path: "/config", Data: longLine, Parent: root}
+	root.Children = []*oci.Node{file}
+	layout := &oci.Layout{InputPath: "fixture", Root: root, Files: map[string]*oci.Node{"/": root, "/config": file}}
+
+	m := New(layout)
+	m.width = 60
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	m.toggleLineNumbers()
+	view := m.View()
+	if strings.Contains(view, "1 │") {
+		t.Fatalf("expected line numbers to be hidden:\n%s", view)
 	}
 
+	m.toggleWrap()
 	m.scrollPreviewHoriz(1000)
 	view = m.View()
 	if !strings.Contains(view, "omega") {
-		t.Fatalf("expected horizontal scroll to reveal end of long line:\n%s", view)
+		t.Fatalf("expected horizontal scroll to reveal end when wrap is disabled:\n%s", view)
 	}
 	assertViewFits(t, view, m.width, m.height)
 }
