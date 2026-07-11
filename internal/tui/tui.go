@@ -141,7 +141,7 @@ func (m Model) View() string {
 		return ""
 	}
 	bodyH := max(1, m.height-3)
-	header := lipgloss.NewStyle().Width(m.width).Render("olav " + m.layout.InputPath)
+	header := lipgloss.NewStyle().Width(m.width).Render("OCI-Layout Archive Visualizer (olav) " + m.layout.InputPath)
 	status := m.status
 	if m.searchMode {
 		status = "/" + m.searchQuery
