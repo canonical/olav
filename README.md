@@ -6,6 +6,14 @@ It accepts an OCI layout directory or tar archive and opens a split-pane TUI for
 
 Top-level JSON is prettified by default. Text previews wrap and show line numbers by default. Layer tarballs are opened asynchronously and show an extraction overlay while they are being indexed.
 
+![OCI-Layout Archive Visualizer preview](assets/preview.png)
+
+## Installation
+
+```sh
+go install github.com/canonical/olav/cmd/olav@latest
+```
+
 ```sh
 go run ./cmd/olav <oci-layout-dir-or-tarball>
 ```
