@@ -17,6 +17,14 @@ import (
 )
 
 func copyToCache(ctx context.Context, sourceRef string, platform Platform, progress io.Writer) (*Resolved, error) {
+	copySourceRef := sourceRef
+	if strings.HasPrefix(sourceRef, "docker-daemon:") {
+		var err error
+		copySourceRef, err = normalizeDockerDaemonSource(ctx, sourceRef)
+		if err != nil {
+			return nil, err
+		}
+	}
 	tmpDir, err := makeTempLayoutDir()
 	if err != nil {
 		return nil, err
@@ -28,7 +36,7 @@ func copyToCache(ctx context.Context, sourceRef string, platform Platform, progr
 		}
 	}()
 
-	src, err := parseSourceReference(sourceRef)
+	src, err := parseSourceReference(copySourceRef)
 	if err != nil {
 		return nil, err
 	}

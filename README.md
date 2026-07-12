@@ -30,6 +30,7 @@ olav docker://ubuntu@sha256:<digest>
 olav --platform linux/amd64 docker://ubuntu:24.04
 olav --platform all docker://ubuntu:24.04
 olav docker-daemon:ubuntu:24.04
+olav docker-daemon:repo/image@sha256:<digest>
 ```
 
 For `docker://` sources, `olav` pulls the current machine platform by default. Use `--platform os/arch` or `--platform os/arch/variant` to select a specific platform. Use `--platform all` to pull and inspect the full multi-platform image index. `--platform` is rejected for `docker-daemon:` sources.
@@ -45,6 +46,8 @@ Authentication uses the default containers/image locations:
 - `~/.config/containers/auth.json`
 
 If authentication fails, `olav` prints a hint pointing to these paths. Login with `docker`, `podman`, or `skopeo` before retrying private images.
+
+For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the daemon's local `RepoDigests` and copies the matching local image ID. The digest-pinned image must already exist locally. Docker daemon export can reconstruct manifests, so remote registry manifest bytes are not always preserved byte-for-byte through daemon sources; use `docker://name@sha256:<digest>` when the exact registry manifest digest must be inspected.
 
 ## Keys
 
