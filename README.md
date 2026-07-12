@@ -90,9 +90,11 @@ Press `v` while the left pane is focused to switch between:
 - OCI Layout: the raw archive/directory file layout
 - Image Graph: semantic index, platform, manifest, config, layer, and artifact relationships
 
-The Image Graph view is useful for multi-architecture images because it groups blobs under the manifests and platforms that reference them without changing the raw OCI layout view.
+The Image Graph view is useful for multi-architecture images because it groups blobs under the manifests and platforms that reference them without changing the raw OCI layout view. It also labels common attestation manifests and includes platform/annotation summaries where available.
 
 Graph nodes are expanded by default. Press `Ctrl+Space` in Image Graph view to expand or collapse all graph nodes.
+
+The raw OCI Layout view remains a faithful file tree, but blob names include graph-derived role and platform hints when available.
 
 ## Preview Behavior
 

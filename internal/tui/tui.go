@@ -366,7 +366,7 @@ func (m *Model) applySearch() {
 	case focusOCI:
 		if m.leftView == leftViewGraph {
 			for i, row := range m.graphRows {
-				if strings.Contains(strings.ToLower(row.node.Label), q) || strings.Contains(strings.ToLower(row.node.Digest), q) || strings.Contains(strings.ToLower(row.node.Platform), q) {
+				if strings.Contains(strings.ToLower(graphSearchText(row.node)), q) {
 					m.selectGraph(i)
 					m.message = "matched " + row.node.Label
 					return
@@ -403,6 +403,18 @@ func (m *Model) applySearch() {
 			m.message = fmt.Sprintf("%d inner preview matches", len(m.innerPreview.SearchMatches))
 		}
 	}
+}
+
+func graphSearchText(n *oci.GraphNode) string {
+	if n == nil {
+		return ""
+	}
+	parts := []string{n.Label, n.Digest, n.MediaType, n.Platform, n.BlobPath, n.Kind.String()}
+	parts = append(parts, n.Summary...)
+	for k, v := range n.Annotations {
+		parts = append(parts, k, v)
+	}
+	return strings.Join(parts, " ")
 }
 
 func (m *Model) rebuildOCIRows() {

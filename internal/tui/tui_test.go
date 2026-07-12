@@ -314,6 +314,23 @@ func TestGraphSummarySelection(t *testing.T) {
 	}
 }
 
+func TestGraphSearchIncludesSummaryAndAnnotations(t *testing.T) {
+	layout := simpleLayout()
+	n := &oci.GraphNode{Label: "linux/amd64", Kind: oci.GraphPlatform, Summary: []string{"Platform: linux/amd64", "org.opencontainers.image.version: 24.10"}, Annotations: map[string]string{"custom": "needle-value"}}
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{n}}
+	m := New(layout)
+	m.leftView = leftViewGraph
+	m.graphExpanded[m.graphKey(layout.GraphRoot)] = true
+	m.rebuildGraphRows()
+	m.searchMode = true
+	m.searchTarget = focusOCI
+	m.searchQuery = "needle-value"
+	m.applySearch()
+	if m.selectedGraph != 1 {
+		t.Fatalf("expected graph search to select annotation node, got %d", m.selectedGraph)
+	}
+}
+
 func TestLayerLoadingOverlayAndSelection(t *testing.T) {
 	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
 	blob := &oci.Node{Name: "abc", Path: "/blobs/sha256/abc", Data: []byte("not-a-tar"), Parent: root, Blob: &oci.BlobInfo{MediaType: "application/vnd.oci.image.layer.v1.tar"}}

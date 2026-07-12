@@ -93,6 +93,32 @@ func TestGraphContainsPlatformManifestAndLayer(t *testing.T) {
 	}
 }
 
+func TestGraphGroupsAttestationsAndRecordsBlobUsage(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`))
+	layerDigest := writeBlob(t, dir, []byte("layer"))
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"` + layerDigest + `","size":5}]}`)
+	manifestDigest := writeBlob(t, dir, manifest)
+	attestation := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[]}`)
+	attestationDigest := writeBlob(t, dir, attestation)
+	index := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + manifestDigest + `","size":` + strconv.Itoa(len(manifest)) + `,"platform":{"os":"linux","architecture":"amd64"},"annotations":{"org.opencontainers.image.version":"24.10"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + attestationDigest + `","size":` + strconv.Itoa(len(attestation)) + `,"platform":{"os":"unknown","architecture":"unknown"},"annotations":{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":"` + manifestDigest + `"}}]}`)
+	mustWrite(t, filepath.Join(dir, "index.json"), index)
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !graphContains(l.GraphRoot, "attestations") {
+		t.Fatalf("expected attestations group in graph")
+	}
+	if !graphContains(l.GraphRoot, "24.10") {
+		t.Fatalf("expected platform version annotation in graph")
+	}
+	layerNode := l.nodeByDigest(layerDigest)
+	if layerNode == nil || !strings.Contains(DisplayName(layerNode), "linux/amd64") {
+		t.Fatalf("expected raw blob label with platform usage, got %#v", layerNode)
+	}
+}
+
 func makeNestedIndexLayout(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()

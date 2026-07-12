@@ -17,11 +17,12 @@ import (
 )
 
 type Layout struct {
-	InputPath string
-	Root      *Node
-	Files     map[string]*Node
-	Blobs     map[string]*BlobInfo
-	GraphRoot *GraphNode
+	InputPath  string
+	Root       *Node
+	Files      map[string]*Node
+	Blobs      map[string]*BlobInfo
+	GraphRoot  *GraphNode
+	BlobUsages map[string][]BlobUsage
 }
 
 type Node struct {
@@ -42,6 +43,14 @@ type BlobInfo struct {
 	Encoded   string
 	MediaType string
 	Role      string
+	Usages    []BlobUsage
+}
+
+type BlobUsage struct {
+	Role         string
+	Platform     string
+	ParentDigest string
+	Annotation   string
 }
 
 type GraphKind int
@@ -59,15 +68,16 @@ const (
 )
 
 type GraphNode struct {
-	Label     string
-	Kind      GraphKind
-	Digest    string
-	MediaType string
-	Platform  string
-	Size      int64
-	BlobPath  string
-	Summary   []string
-	Children  []*GraphNode
+	Label       string
+	Kind        GraphKind
+	Digest      string
+	MediaType   string
+	Platform    string
+	Annotations map[string]string
+	Size        int64
+	BlobPath    string
+	Summary     []string
+	Children    []*GraphNode
 }
 
 func (k GraphKind) String() string {
@@ -96,10 +106,11 @@ func (k GraphKind) String() string {
 }
 
 type descriptor struct {
-	MediaType string            `json:"mediaType"`
-	Digest    string            `json:"digest"`
-	Size      int64             `json:"size"`
-	Platform  map[string]string `json:"platform"`
+	MediaType   string            `json:"mediaType"`
+	Digest      string            `json:"digest"`
+	Size        int64             `json:"size"`
+	Platform    map[string]string `json:"platform"`
+	Annotations map[string]string `json:"annotations"`
 }
 
 type indexFile struct {
@@ -129,10 +140,11 @@ func Load(input string) (*Layout, error) {
 	}
 
 	l := &Layout{
-		InputPath: input,
-		Root:      &Node{Name: "/", Path: "/", IsDir: true, Mode: fs.ModeDir | 0o755},
-		Files:     map[string]*Node{},
-		Blobs:     map[string]*BlobInfo{},
+		InputPath:  input,
+		Root:       &Node{Name: "/", Path: "/", IsDir: true, Mode: fs.ModeDir | 0o755},
+		Files:      map[string]*Node{},
+		Blobs:      map[string]*BlobInfo{},
+		BlobUsages: map[string][]BlobUsage{},
 	}
 	l.Files["/"] = l.Root
 
@@ -311,6 +323,7 @@ func (l *Layout) annotateDescriptor(desc descriptor, fallbackRole string, visite
 	}
 	visited[desc.Digest] = true
 	l.mark(desc, roleForMediaType(desc.MediaType, fallbackRole))
+	l.addBlobUsage(desc, BlobUsage{Role: roleForMediaType(desc.MediaType, fallbackRole), Platform: platformLabel(desc.Platform), Annotation: annotationSummary(desc)})
 	if IsIndexMediaType(desc.MediaType) {
 		l.annotateIndex(desc.Digest, visited)
 		return
@@ -349,12 +362,29 @@ func (l *Layout) annotateManifest(digest string, visited map[string]bool) {
 	for i, layer := range mf.Layers {
 		role := fmt.Sprintf("layer %d", i+1)
 		l.mark(layer, roleForMediaType(layer.MediaType, role))
+		l.addBlobUsage(layer, BlobUsage{Role: roleForMediaType(layer.MediaType, role), ParentDigest: digest})
 	}
 	for _, blob := range mf.Blobs {
 		l.annotateDescriptor(blob, "artifact", visited)
 	}
 	if mf.Subject != nil {
 		l.annotateDescriptor(*mf.Subject, "subject", visited)
+	}
+}
+
+func (l *Layout) addBlobUsage(desc descriptor, usage BlobUsage) {
+	if desc.Digest == "" {
+		return
+	}
+	if usage.Role == "" {
+		usage.Role = "blob"
+	}
+	if usage.Platform == "" {
+		usage.Platform = platformLabel(desc.Platform)
+	}
+	l.BlobUsages[desc.Digest] = append(l.BlobUsages[desc.Digest], usage)
+	if blob := l.Blobs[desc.Digest]; blob != nil {
+		blob.Usages = append(blob.Usages, usage)
 	}
 }
 
@@ -369,21 +399,20 @@ func (l *Layout) buildGraph() *GraphNode {
 		return root
 	}
 	visited := map[string]bool{}
-	for _, desc := range idx.Manifests {
-		root.Children = append(root.Children, l.graphDescriptor(desc, "manifest", visited))
-	}
+	l.appendGraphIndexChildren(root, idx.Manifests, visited)
 	return root
 }
 
 func (l *Layout) graphDescriptor(desc descriptor, fallbackRole string, visited map[string]bool) *GraphNode {
 	node := &GraphNode{
-		Label:     graphLabel(desc, fallbackRole),
-		Kind:      graphKind(desc, fallbackRole),
-		Digest:    desc.Digest,
-		MediaType: desc.MediaType,
-		Platform:  platformLabel(desc.Platform),
-		Size:      desc.Size,
-		BlobPath:  l.blobPath(desc.Digest),
+		Label:       graphLabel(desc, fallbackRole),
+		Kind:        graphKind(desc, fallbackRole),
+		Digest:      desc.Digest,
+		MediaType:   desc.MediaType,
+		Platform:    platformLabel(desc.Platform),
+		Annotations: desc.Annotations,
+		Size:        desc.Size,
+		BlobPath:    l.blobPath(desc.Digest),
 	}
 	if desc.Digest == "" || visited[desc.Digest] {
 		return node
@@ -408,15 +437,29 @@ func (l *Layout) graphIndex(parent *GraphNode, digest string, visited map[string
 	if json.Unmarshal(node.Data, &idx) != nil {
 		return
 	}
-	for _, desc := range idx.Manifests {
+	l.appendGraphIndexChildren(parent, idx.Manifests, visited)
+}
+
+func (l *Layout) appendGraphIndexChildren(parent *GraphNode, manifests []descriptor, visited map[string]bool) {
+	var attestations []*GraphNode
+	for _, desc := range manifests {
 		child := l.graphDescriptor(desc, "manifest", visited)
+		if desc.Annotations["vnd.docker.reference.type"] == "attestation-manifest" {
+			child.Label = "attestation " + shortDigest(desc.Digest)
+			child.Summary = append([]string{"Attestation manifest: " + desc.Digest, "For manifest: " + desc.Annotations["vnd.docker.reference.digest"]}, annotationLines(desc.Annotations)...)
+			attestations = append(attestations, child)
+			continue
+		}
 		if child.Platform != "" && child.Platform != "unknown/unknown" {
-			platform := &GraphNode{Label: child.Platform, Kind: GraphPlatform, Platform: child.Platform, Summary: []string{"Platform: " + child.Platform, "Manifest: " + desc.Digest, "Media type: " + desc.MediaType}}
+			platform := &GraphNode{Label: graphPlatformLabel(desc), Kind: GraphPlatform, Platform: child.Platform, Annotations: desc.Annotations, Summary: platformSummary(desc, child)}
 			platform.Children = append(platform.Children, child)
 			parent.Children = append(parent.Children, platform)
 		} else {
 			parent.Children = append(parent.Children, child)
 		}
+	}
+	if len(attestations) > 0 {
+		parent.Children = append(parent.Children, &GraphNode{Label: "attestations", Kind: GraphArtifact, Summary: []string{fmt.Sprintf("Attestations: %d", len(attestations))}, Children: attestations})
 	}
 }
 
@@ -433,12 +476,16 @@ func (l *Layout) graphManifest(parent *GraphNode, desc descriptor, visited map[s
 	if desc.Platform != nil {
 		parent.Summary = append(parent.Summary, "Platform: "+platformLabel(desc.Platform))
 	}
+	parent.Summary = append(parent.Summary, fmt.Sprintf("Layers: %d", len(mf.Layers)))
+	parent.Summary = append(parent.Summary, annotationLines(desc.Annotations)...)
 	if mf.Config.Digest != "" {
-		parent.Children = append(parent.Children, l.graphLeaf(mf.Config, GraphConfig, "config"))
+		parent.Children = append(parent.Children, l.graphLeaf(mf.Config, GraphConfig, "config", platformLabel(desc.Platform), desc.Digest))
 	}
 	for i, layerDesc := range mf.Layers {
 		role := fmt.Sprintf("layer %d", i+1)
-		parent.Children = append(parent.Children, l.graphLeaf(layerDesc, GraphLayer, role))
+		platform := platformLabel(desc.Platform)
+		l.addBlobUsage(layerDesc, BlobUsage{Role: roleForMediaType(layerDesc.MediaType, role), Platform: platform, ParentDigest: desc.Digest})
+		parent.Children = append(parent.Children, l.graphLeaf(layerDesc, GraphLayer, role, platform, desc.Digest))
 	}
 	for _, blob := range mf.Blobs {
 		parent.Children = append(parent.Children, l.graphDescriptor(blob, "artifact", visited))
@@ -448,8 +495,8 @@ func (l *Layout) graphManifest(parent *GraphNode, desc descriptor, visited map[s
 	}
 }
 
-func (l *Layout) graphLeaf(desc descriptor, kind GraphKind, role string) *GraphNode {
-	return &GraphNode{Label: graphLabel(desc, role), Kind: kind, Digest: desc.Digest, MediaType: desc.MediaType, Size: desc.Size, BlobPath: l.blobPath(desc.Digest), Summary: []string{titleWord(role) + ": " + desc.Digest, "Media type: " + desc.MediaType, fmt.Sprintf("Size: %d bytes", desc.Size)}}
+func (l *Layout) graphLeaf(desc descriptor, kind GraphKind, role, platform, parentDigest string) *GraphNode {
+	return &GraphNode{Label: graphLabel(desc, role), Kind: kind, Digest: desc.Digest, MediaType: desc.MediaType, Platform: platform, Annotations: desc.Annotations, Size: desc.Size, BlobPath: l.blobPath(desc.Digest), Summary: []string{titleWord(role) + ": " + desc.Digest, "Media type: " + desc.MediaType, "Platform: " + platform, "Parent manifest: " + parentDigest, fmt.Sprintf("Size: %d bytes", desc.Size)}}
 }
 
 func titleWord(s string) string {
@@ -498,6 +545,50 @@ func platformLabel(platform map[string]string) string {
 		return os + "/" + arch + "/" + variant
 	}
 	return os + "/" + arch
+}
+
+func graphPlatformLabel(desc descriptor) string {
+	label := platformLabel(desc.Platform)
+	if label == "" {
+		label = "unknown platform"
+	}
+	if version := desc.Annotations["org.opencontainers.image.version"]; version != "" {
+		label += "  " + version
+	}
+	if arch := desc.Annotations["com.docker.official-images.bashbrew.arch"]; arch != "" && !strings.Contains(label, arch) {
+		label += "  " + arch
+	}
+	return label
+}
+
+func platformSummary(desc descriptor, manifest *GraphNode) []string {
+	lines := []string{"Platform: " + platformLabel(desc.Platform), "Manifest: " + desc.Digest, "Media type: " + desc.MediaType}
+	if manifest != nil {
+		lines = append(lines, fmt.Sprintf("Children: %d", len(manifest.Children)))
+	}
+	lines = append(lines, annotationLines(desc.Annotations)...)
+	return lines
+}
+
+func annotationLines(annotations map[string]string) []string {
+	if len(annotations) == 0 {
+		return nil
+	}
+	keys := []string{"org.opencontainers.image.version", "org.opencontainers.image.source", "org.opencontainers.image.url", "org.opencontainers.image.revision", "com.docker.official-images.bashbrew.arch", "vnd.docker.reference.type", "vnd.docker.reference.digest"}
+	var lines []string
+	for _, key := range keys {
+		if value := annotations[key]; value != "" {
+			lines = append(lines, key+": "+value)
+		}
+	}
+	return lines
+}
+
+func annotationSummary(desc descriptor) string {
+	if desc.Annotations["vnd.docker.reference.type"] == "attestation-manifest" {
+		return "attestation for " + desc.Annotations["vnd.docker.reference.digest"]
+	}
+	return ""
 }
 
 func shortDigest(digest string) string {
@@ -599,6 +690,13 @@ func DisplayName(n *Node) string {
 	if n == nil {
 		return ""
 	}
+	if n.Blob != nil && len(n.Blob.Usages) > 0 {
+		name := n.Name
+		if len(name) > 12 {
+			name = name[:12] + "..."
+		}
+		return name + "  " + usageLabel(n.Blob.Usages)
+	}
 	if n.Blob != nil && n.Blob.Role != "" && n.Blob.Role != "blob" {
 		name := n.Name
 		if len(name) > 12 {
@@ -607,4 +705,25 @@ func DisplayName(n *Node) string {
 		return name + "  " + n.Blob.Role
 	}
 	return n.Name
+}
+
+func usageLabel(usages []BlobUsage) string {
+	first := usages[0]
+	for _, usage := range usages {
+		if usage.Platform != "" || usage.Annotation != "" {
+			first = usage
+			break
+		}
+	}
+	label := first.Role
+	if first.Platform != "" {
+		label += " " + first.Platform
+	}
+	if first.Annotation != "" {
+		label += " " + first.Annotation
+	}
+	if len(usages) > 1 {
+		label = "shared " + label
+	}
+	return strings.TrimSpace(label)
 }
