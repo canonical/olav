@@ -64,6 +64,12 @@ type manifestFile struct {
 	Blobs         []descriptor `json:"blobs"`
 }
 
+type imageIndexFile struct {
+	SchemaVersion int          `json:"schemaVersion"`
+	MediaType     string       `json:"mediaType"`
+	Manifests     []descriptor `json:"manifests"`
+}
+
 func Load(input string) (*Layout, error) {
 	info, err := os.Stat(input)
 	if err != nil {
@@ -240,13 +246,42 @@ func (l *Layout) annotateBlobs() {
 	if json.Unmarshal(idxNode.Data, &idx) != nil {
 		return
 	}
+	visited := map[string]bool{}
 	for _, manifest := range idx.Manifests {
-		l.mark(manifest, roleForMediaType(manifest.MediaType, "manifest"))
-		l.annotateManifest(manifest.Digest)
+		l.annotateDescriptor(manifest, "manifest", visited)
 	}
 }
 
-func (l *Layout) annotateManifest(digest string) {
+func (l *Layout) annotateDescriptor(desc descriptor, fallbackRole string, visited map[string]bool) {
+	if desc.Digest == "" || visited[desc.Digest] {
+		return
+	}
+	visited[desc.Digest] = true
+	l.mark(desc, roleForMediaType(desc.MediaType, fallbackRole))
+	if IsIndexMediaType(desc.MediaType) {
+		l.annotateIndex(desc.Digest, visited)
+		return
+	}
+	if IsManifestMediaType(desc.MediaType) || desc.MediaType == "" {
+		l.annotateManifest(desc.Digest, visited)
+	}
+}
+
+func (l *Layout) annotateIndex(digest string, visited map[string]bool) {
+	node := l.nodeByDigest(digest)
+	if node == nil {
+		return
+	}
+	var idx imageIndexFile
+	if json.Unmarshal(node.Data, &idx) != nil {
+		return
+	}
+	for _, manifest := range idx.Manifests {
+		l.annotateDescriptor(manifest, "manifest", visited)
+	}
+}
+
+func (l *Layout) annotateManifest(digest string, visited map[string]bool) {
 	node := l.nodeByDigest(digest)
 	if node == nil {
 		return
@@ -263,10 +298,10 @@ func (l *Layout) annotateManifest(digest string) {
 		l.mark(layer, roleForMediaType(layer.MediaType, role))
 	}
 	for _, blob := range mf.Blobs {
-		l.mark(blob, roleForMediaType(blob.MediaType, "artifact"))
+		l.annotateDescriptor(blob, "artifact", visited)
 	}
 	if mf.Subject != nil {
-		l.mark(*mf.Subject, roleForMediaType(mf.Subject.MediaType, "subject"))
+		l.annotateDescriptor(*mf.Subject, "subject", visited)
 	}
 }
 
@@ -322,6 +357,16 @@ func roleForMediaType(mediaType, fallback string) string {
 func IsLayerMediaType(mediaType string) bool {
 	lower := strings.ToLower(mediaType)
 	return strings.Contains(lower, "layer") && strings.Contains(lower, "tar")
+}
+
+func IsIndexMediaType(mediaType string) bool {
+	lower := strings.ToLower(mediaType)
+	return lower == "application/vnd.oci.image.index.v1+json" || lower == "application/vnd.docker.distribution.manifest.list.v2+json"
+}
+
+func IsManifestMediaType(mediaType string) bool {
+	lower := strings.ToLower(mediaType)
+	return lower == "application/vnd.oci.image.manifest.v1+json" || lower == "application/vnd.docker.distribution.manifest.v2+json"
 }
 
 func IsGzip(data []byte, mediaType string) bool {

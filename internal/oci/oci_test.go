@@ -64,6 +64,27 @@ func TestCompressionAndLayerMediaHelpers(t *testing.T) {
 	}
 }
 
+func TestNestedIndexAnnotatesLayers(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`))
+	layerData := []byte("layer")
+	layerDigest := writeBlob(t, dir, layerData)
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"` + layerDigest + `","size":` + strconv.Itoa(len(layerData)) + `}]}`)
+	manifestDigest := writeBlob(t, dir, manifest)
+	nestedIndex := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + manifestDigest + `","size":` + strconv.Itoa(len(manifest)) + `}]}`)
+	nestedDigest := writeBlob(t, dir, nestedIndex)
+	index := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"` + nestedDigest + `","size":` + strconv.Itoa(len(nestedIndex)) + `}]}`)
+	mustWrite(t, filepath.Join(dir, "index.json"), index)
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := l.nodeByDigest(layerDigest)
+	if node == nil || node.Blob == nil || node.Blob.MediaType != "application/vnd.oci.image.layer.v1.tar+gzip" {
+		t.Fatalf("expected nested layer annotation, got %#v", node)
+	}
+}
+
 func makeOCILayout(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

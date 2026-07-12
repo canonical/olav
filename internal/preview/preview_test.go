@@ -98,6 +98,13 @@ func TestBinaryPreview(t *testing.T) {
 	}
 }
 
+func TestIsTextUsesBoundedSample(t *testing.T) {
+	data := append([]byte(strings.Repeat("a", 9000)), 0xff)
+	if !IsText(data) {
+		t.Fatal("expected text detection to use bounded UTF-8 sample")
+	}
+}
+
 func TestSyntaxHighlightingByExtension(t *testing.T) {
 	tests := []struct {
 		title string

@@ -110,6 +110,22 @@ The selected OCI blob remains highlighted while extraction is running. Once inde
 
 Non-text files inside layer tarballs show metadata only.
 
+By default, `olav` automatically opens layer tarballs when they are selected only if the OCI layout has at most three layer tarballs. This avoids expensive accidental extraction when inspecting large multi-platform images. Set `MAX_NUM_AUTO_TARBALL_EXTRACTION` to change the threshold:
+
+```sh
+MAX_NUM_AUTO_TARBALL_EXTRACTION=0 olav docker://ubuntu:24.04
+MAX_NUM_AUTO_TARBALL_EXTRACTION=10 olav --platform all docker://ubuntu:24.04
+```
+
+When auto extraction is disabled by the threshold, select a layer and press `Enter`, `l`, or `Right` to open it explicitly.
+
+Large top-level blobs are also not previewed automatically. Set `MAX_AUTO_TEXT_PREVIEW_BYTES` to change the default 1 MiB threshold. Select a large blob and press `Enter`, `l`, or `Right` to preview it explicitly.
+
+```sh
+MAX_AUTO_TEXT_PREVIEW_BYTES=0 olav ./oci-layout
+MAX_AUTO_TEXT_PREVIEW_BYTES=10485760 olav ./oci-layout
+```
+
 ## Export Layout
 
 Top-level OCI files are exported under:

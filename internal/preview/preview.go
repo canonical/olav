@@ -88,14 +88,14 @@ func IsText(data []byte) bool {
 	if len(data) == 0 {
 		return true
 	}
-	if !utf8.Valid(data) {
+	sample := data
+	if len(sample) > 8000 {
+		sample = sample[:8000]
+	}
+	if !utf8.Valid(sample) {
 		return false
 	}
-	limit := len(data)
-	if limit > 8000 {
-		limit = 8000
-	}
-	for _, b := range data[:limit] {
+	for _, b := range sample {
 		if b == 0 {
 			return false
 		}

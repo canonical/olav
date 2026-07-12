@@ -3,6 +3,7 @@ package tui
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -181,6 +182,108 @@ func TestLayerLoadingOverlayAndSelection(t *testing.T) {
 		t.Fatalf("expected centered extraction overlay:\n%s", view)
 	}
 	assertViewFits(t, view, m.width, m.height)
+}
+
+func TestLayerAutoExtractionLimitPlaceholder(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "1")
+	layout := layoutWithLayerNodes(2)
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.selectOCI(m.indexOfOCI("/blobs/sha256/layer0"))
+	if m.loadingLayerPath != "" {
+		t.Fatalf("did not expect auto extraction, got loading %q", m.loadingLayerPath)
+	}
+	if m.preview == nil || !strings.Contains(strings.Join(m.preview.PlainLines, "\n"), "not opened automatically") {
+		t.Fatalf("expected placeholder preview, got %#v", m.preview)
+	}
+}
+
+func TestExplicitLayerOpenOverLimit(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "0")
+	layout := layoutWithLayerNodes(1)
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.selectedOCI = m.indexOfOCI("/blobs/sha256/layer0")
+	m.focus = focusOCI
+	m.openOrExpand()
+	if m.loadingLayerPath != "/blobs/sha256/layer0" {
+		t.Fatalf("expected explicit open to start extraction, got %q", m.loadingLayerPath)
+	}
+}
+
+func TestLayerAutoExtractionUnderLimit(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "3")
+	layout := layoutWithLayerNodes(1)
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.selectOCI(m.indexOfOCI("/blobs/sha256/layer0"))
+	if m.loadingLayerPath != "/blobs/sha256/layer0" {
+		t.Fatalf("expected auto extraction under limit, got %q", m.loadingLayerPath)
+	}
+}
+
+func TestCachedLayerOpensOverLimit(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "0")
+	layout := layoutWithLayerNodes(1)
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	root := &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}
+	cached := &layer.Layer{Title: "cached", Root: root, Entries: map[string]*layer.Entry{"/": root}}
+	m.layerCache["/blobs/sha256/layer0"] = cached
+	m.selectOCI(m.indexOfOCI("/blobs/sha256/layer0"))
+	if m.currentLayer != cached {
+		t.Fatal("expected cached layer to open even over auto extraction limit")
+	}
+}
+
+func TestAutoExtractionLimitEnvParsing(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "7")
+	if got := autoExtractLayerLimitFromEnv(); got != 7 {
+		t.Fatalf("got %d", got)
+	}
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "bad")
+	if got := autoExtractLayerLimitFromEnv(); got != 3 {
+		t.Fatalf("invalid env should fall back to 3, got %d", got)
+	}
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "0")
+	if got := autoExtractLayerLimitFromEnv(); got != 0 {
+		t.Fatalf("zero should be accepted, got %d", got)
+	}
+}
+
+func TestLargeBlobPreviewDeferredUntilExplicitOpen(t *testing.T) {
+	t.Setenv("MAX_AUTO_TEXT_PREVIEW_BYTES", "4")
+	layout := layoutWithLargeBlob([]byte("hello world"))
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.selectOCI(m.indexOfOCI("/blobs/sha256/big"))
+	if m.preview == nil || !strings.Contains(strings.Join(m.preview.PlainLines, "\n"), "not opened automatically") {
+		t.Fatalf("expected large blob placeholder, got %#v", m.preview)
+	}
+	m.openOrExpand()
+	if m.preview == nil || !strings.Contains(strings.Join(m.preview.PlainLines, "\n"), "hello world") {
+		t.Fatalf("expected explicit open to preview blob, got %#v", m.preview)
+	}
+}
+
+func TestMaxAutoTextPreviewEnvParsing(t *testing.T) {
+	t.Setenv("MAX_AUTO_TEXT_PREVIEW_BYTES", "7")
+	if got := maxAutoTextPreviewBytesFromEnv(); got != 7 {
+		t.Fatalf("got %d", got)
+	}
+	t.Setenv("MAX_AUTO_TEXT_PREVIEW_BYTES", "bad")
+	if got := maxAutoTextPreviewBytesFromEnv(); got != 1<<20 {
+		t.Fatalf("invalid env should fall back to default, got %d", got)
+	}
+	t.Setenv("MAX_AUTO_TEXT_PREVIEW_BYTES", "0")
+	if got := maxAutoTextPreviewBytesFromEnv(); got != 0 {
+		t.Fatalf("zero should be accepted, got %d", got)
+	}
 }
 
 func TestSpacePagesPreview(t *testing.T) {
@@ -560,6 +663,43 @@ func TestFStillPagesPreview(t *testing.T) {
 
 func simpleLayout() *oci.Layout {
 	return simpleLayoutWithData([]byte(`{"schemaVersion":2}`))
+}
+
+func layoutWithLayerNodes(count int) *oci.Layout {
+	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
+	blobs := &oci.Node{Name: "blobs", Path: "/blobs", IsDir: true, Parent: root}
+	sha := &oci.Node{Name: "sha256", Path: "/blobs/sha256", IsDir: true, Parent: blobs}
+	root.Children = []*oci.Node{blobs}
+	blobs.Children = []*oci.Node{sha}
+	files := map[string]*oci.Node{"/": root, "/blobs": blobs, "/blobs/sha256": sha}
+	for i := 0; i < count; i++ {
+		name := fmt.Sprintf("layer%d", i)
+		p := "/blobs/sha256/" + name
+		node := &oci.Node{Name: name, Path: p, Parent: sha, Size: 10, Data: tinyTarForLayout(), Blob: &oci.BlobInfo{MediaType: "application/vnd.oci.image.layer.v1.tar", Role: "layer"}}
+		sha.Children = append(sha.Children, node)
+		files[p] = node
+	}
+	return &oci.Layout{InputPath: "fixture", Root: root, Files: files}
+}
+
+func layoutWithLargeBlob(data []byte) *oci.Layout {
+	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
+	blobs := &oci.Node{Name: "blobs", Path: "/blobs", IsDir: true, Parent: root}
+	sha := &oci.Node{Name: "sha256", Path: "/blobs/sha256", IsDir: true, Parent: blobs}
+	node := &oci.Node{Name: "big", Path: "/blobs/sha256/big", Parent: sha, Size: int64(len(data)), Data: data, Blob: &oci.BlobInfo{MediaType: "text/plain", Role: "blob"}}
+	root.Children = []*oci.Node{blobs}
+	blobs.Children = []*oci.Node{sha}
+	sha.Children = []*oci.Node{node}
+	return &oci.Layout{InputPath: "fixture", Root: root, Files: map[string]*oci.Node{"/": root, "/blobs": blobs, "/blobs/sha256": sha, node.Path: node}}
+}
+
+func tinyTarForLayout() []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: "file", Typeflag: tar.TypeReg, Size: 1})
+	_, _ = tw.Write([]byte("x"))
+	_ = tw.Close()
+	return buf.Bytes()
 }
 
 func modelWithLayerEntries() Model {

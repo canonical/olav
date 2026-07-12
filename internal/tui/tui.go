@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/canonical/olav/internal/export"
@@ -44,14 +46,17 @@ type Model struct {
 
 	preview *preview.Preview
 
-	layerCache         map[string]*layer.Layer
-	currentLayer       *layer.Layer
-	loadingLayerPath   string
-	layerRows          []layerRow
-	selectedLayerRow   int
-	layerExpanded      map[string]bool
-	innerPreview       *preview.Preview
-	chiselPreviewCache map[string]*preview.Preview
+	layerCache          map[string]*layer.Layer
+	currentLayer        *layer.Layer
+	loadingLayerPath    string
+	layerBlobCount      int
+	autoExtractLimit    int
+	maxAutoPreviewBytes int64
+	layerRows           []layerRow
+	selectedLayerRow    int
+	layerExpanded       map[string]bool
+	innerPreview        *preview.Preview
+	chiselPreviewCache  map[string]*preview.Preview
 }
 
 type layerLoadedMsg struct {
@@ -83,15 +88,60 @@ var (
 
 func New(layout *oci.Layout) Model {
 	m := Model{
-		layout:             layout,
-		ociExpanded:        map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
-		layerCache:         map[string]*layer.Layer{},
-		layerExpanded:      map[string]bool{"/": true},
-		chiselPreviewCache: map[string]*preview.Preview{},
+		layout:              layout,
+		ociExpanded:         map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
+		layerCache:          map[string]*layer.Layer{},
+		layerExpanded:       map[string]bool{"/": true},
+		chiselPreviewCache:  map[string]*preview.Preview{},
+		layerBlobCount:      countLayerBlobs(layout),
+		autoExtractLimit:    autoExtractLayerLimitFromEnv(),
+		maxAutoPreviewBytes: maxAutoTextPreviewBytesFromEnv(),
 	}
 	m.rebuildOCIRows()
 	m.selectOCI(0)
 	return m
+}
+
+func maxAutoTextPreviewBytesFromEnv() int64 {
+	const defaultLimit = int64(1 << 20)
+	value := os.Getenv("MAX_AUTO_TEXT_PREVIEW_BYTES")
+	if value == "" {
+		return defaultLimit
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n < 0 {
+		return defaultLimit
+	}
+	return n
+}
+
+func autoExtractLayerLimitFromEnv() int {
+	value := os.Getenv("MAX_NUM_AUTO_TARBALL_EXTRACTION")
+	if value == "" {
+		return 3
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return 3
+	}
+	return n
+}
+
+func countLayerBlobs(layout *oci.Layout) int {
+	if layout == nil {
+		return 0
+	}
+	count := 0
+	for _, node := range layout.Files {
+		if isLayerNode(node) {
+			count++
+		}
+	}
+	return count
+}
+
+func isLayerNode(node *oci.Node) bool {
+	return node != nil && node.Blob != nil && oci.IsLayerMediaType(node.Blob.MediaType)
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -364,19 +414,80 @@ func (m *Model) selectOCI(i int) {
 	}
 	m.selectedOCI = i
 	node := m.ociRows[i].node
+	m.selectOCINode(node, false)
+}
+
+func (m *Model) selectOCINode(node *oci.Node, explicit bool) {
 	m.currentLayer = nil
 	m.innerPreview = nil
-	if node.IsDir {
+	if node == nil || node.IsDir {
 		m.preview = nil
 		return
 	}
-	if node.Blob != nil && oci.IsLayerMediaType(node.Blob.MediaType) {
-		m.openLayer(node)
+	if isLayerNode(node) {
+		m.selectLayerBlob(node, explicit)
+		return
+	}
+	if !explicit && m.shouldDeferBlobPreview(node) {
+		p := preview.New(node.Path, []byte(m.largeBlobPlaceholder(node)), false)
+		m.preview = &p
 		return
 	}
 	prettyDefault := strings.HasSuffix(strings.ToLower(node.Name), ".json") || strings.Contains(strings.ToLower(blobMediaType(node)), "json")
 	p := preview.New(node.Path, node.Data, prettyDefault)
 	m.preview = &p
+}
+
+func (m *Model) shouldDeferBlobPreview(node *oci.Node) bool {
+	return node != nil && node.Blob != nil && node.Size > m.maxAutoPreviewBytes
+}
+
+func (m *Model) largeBlobPlaceholder(node *oci.Node) string {
+	var b strings.Builder
+	b.WriteString("Preview is not opened automatically for large blobs.\n\n")
+	fmt.Fprintf(&b, "Blob size: %d bytes\n", node.Size)
+	fmt.Fprintf(&b, "Auto preview limit: %d bytes\n", m.maxAutoPreviewBytes)
+	if node.Blob != nil && node.Blob.MediaType != "" {
+		fmt.Fprintf(&b, "Media type: %s\n", node.Blob.MediaType)
+	}
+	b.WriteString("\nPress Enter, l, or Right to preview this file.\n")
+	b.WriteString("Set MAX_AUTO_TEXT_PREVIEW_BYTES to change this behavior.\n")
+	return b.String()
+}
+
+func (m *Model) selectLayerBlob(node *oci.Node, explicit bool) {
+	if cached, ok := m.layerCache[node.Path]; ok {
+		m.currentLayer = cached
+		m.message = "Opened cached layer " + node.Path
+		m.layerExpanded = map[string]bool{"/": true}
+		m.rebuildLayerRows()
+		m.selectLayer(0)
+		return
+	}
+	if explicit || m.layerBlobCount <= m.autoExtractLimit {
+		m.openLayer(node)
+		return
+	}
+	m.currentLayer = nil
+	m.innerPreview = nil
+	m.layerRows = nil
+	text := m.layerOpenPlaceholder(node)
+	p := preview.New(node.Path, []byte(text), false)
+	m.preview = &p
+}
+
+func (m *Model) layerOpenPlaceholder(node *oci.Node) string {
+	var b strings.Builder
+	b.WriteString("Layer tarball preview is not opened automatically.\n\n")
+	fmt.Fprintf(&b, "This OCI layout has %d layer tarballs.\n", m.layerBlobCount)
+	fmt.Fprintf(&b, "Auto extraction limit: %d.\n", m.autoExtractLimit)
+	if node.Blob != nil && node.Blob.MediaType != "" {
+		fmt.Fprintf(&b, "Media type: %s\n", node.Blob.MediaType)
+	}
+	fmt.Fprintf(&b, "Size: %d bytes\n\n", node.Size)
+	b.WriteString("Press Enter, l, or Right to open this layer.\n")
+	b.WriteString("Set MAX_NUM_AUTO_TARBALL_EXTRACTION to change this behavior.\n")
+	return b.String()
 }
 
 func (m *Model) openLayer(node *oci.Node) {
@@ -562,7 +673,7 @@ func (m *Model) openOrExpand() {
 			m.ociExpanded[n.Path] = true
 			m.rebuildOCIRows()
 		} else {
-			m.selectOCI(m.selectedOCI)
+			m.selectOCINode(n, true)
 		}
 	case focusLayer:
 		e := m.layerRows[m.selectedLayerRow].entry
