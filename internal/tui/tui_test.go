@@ -337,6 +337,62 @@ func TestTabWhileZoomedShowsOverlay(t *testing.T) {
 	assertViewFits(t, view, m.width, m.height)
 }
 
+func TestShiftTabMovesFocusBackward(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(Model)
+	if m.focus != focusOCI {
+		t.Fatalf("expected shift+tab from preview to focus OCI, got %v", m.focus)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(Model)
+	if m.focus != focusPreview {
+		t.Fatalf("expected shift+tab from OCI to wrap to preview, got %v", m.focus)
+	}
+}
+
+func TestShiftTabInThreePaneMode(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 100
+	m.height = 20
+	m.currentLayer = &layer.Layer{Title: "layer", Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}, Entries: map[string]*layer.Entry{}}
+	entry := &layer.Entry{Name: "file", Path: "/file", Type: tar.TypeReg, Data: []byte("text"), Parent: m.currentLayer.Root}
+	m.currentLayer.Root.Children = []*layer.Entry{entry}
+	m.currentLayer.Entries["/"] = m.currentLayer.Root
+	m.currentLayer.Entries[entry.Path] = entry
+	m.layerExpanded = map[string]bool{"/": true}
+	m.rebuildLayerRows()
+	m.selectLayer(m.indexOfLayer(entry.Path))
+	m.focus = focusInnerPreview
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(Model)
+	if m.focus != focusLayer {
+		t.Fatalf("expected shift+tab from inner preview to layer, got %v", m.focus)
+	}
+}
+
+func TestShiftTabWhileZoomedShowsOverlay(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	m.toggleZoom()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	m = updated.(Model)
+	if m.focus != focusPreview {
+		t.Fatalf("expected focus to remain preview, got %v", m.focus)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Press z again to exit zoom state.") {
+		t.Fatalf("expected zoom exit overlay:\n%s", view)
+	}
+}
+
 func TestZoomInnerPreview(t *testing.T) {
 	m := New(simpleLayout())
 	m.width = 100

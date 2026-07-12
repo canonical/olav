@@ -59,7 +59,7 @@ type layerLoadedMsg struct {
 	err   error
 }
 
-const helpText = "Tab focus | j/k move | Space toggle/page | z zoom | / search | p pretty | w wrap | # lines | e export | q quit"
+const helpText = "Tab/Shift+Tab focus | j/k move | Space toggle/page | z zoom | / search | p pretty | w wrap | # lines | e export | q quit"
 
 type treeRow struct {
 	node  *oci.Node
@@ -133,13 +133,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "?":
-			m.message = "Keys: Tab focus, Space toggle/page, z zoom, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
+			m.message = "Keys: Tab/Shift+Tab focus, Space toggle/page, z zoom, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
 		case "tab":
 			if m.zoomed {
 				m.overlayMessage = "Press z again to exit zoom state."
 				break
 			}
 			m.nextFocus()
+		case "shift+tab":
+			if m.zoomed {
+				m.overlayMessage = "Press z again to exit zoom state."
+				break
+			}
+			m.previousFocus()
 		case "/":
 			m.searchMode = true
 			m.searchTarget = m.focus
@@ -440,6 +446,16 @@ func (m *Model) selectChiselManifest(e *layer.Entry) {
 }
 
 func (m *Model) nextFocus() {
+	visible := m.visibleFocuses()
+	m.moveFocus(visible, 1)
+}
+
+func (m *Model) previousFocus() {
+	visible := m.visibleFocuses()
+	m.moveFocus(visible, -1)
+}
+
+func (m *Model) visibleFocuses() []focus {
 	visible := []focus{focusOCI}
 	if m.currentLayer != nil {
 		visible = append(visible, focusLayer)
@@ -449,6 +465,13 @@ func (m *Model) nextFocus() {
 	} else {
 		visible = append(visible, focusPreview)
 	}
+	return visible
+}
+
+func (m *Model) moveFocus(visible []focus, delta int) {
+	if len(visible) == 0 {
+		return
+	}
 	idx := 0
 	for i, f := range visible {
 		if f == m.focus {
@@ -456,7 +479,7 @@ func (m *Model) nextFocus() {
 			break
 		}
 	}
-	m.focus = visible[(idx+1)%len(visible)]
+	m.focus = visible[(idx+delta+len(visible))%len(visible)]
 }
 
 func (m *Model) openOrExpand() {

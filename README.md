@@ -12,7 +12,7 @@ go run ./cmd/olav <oci-layout-dir-or-tarball>
 
 ## Keys
 
-- `Tab`: switch focus between visible panes
+- `Tab` / `Shift+Tab`: switch focus forward/backward between visible panes
 - `j` / `k`: move down/up in trees or scroll focused preview
 - `Space`: expand/collapse folders in tree panes, or page down in preview panes
 - `Enter` / `l` / `Right`: expand or open in tree panes
