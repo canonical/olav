@@ -33,6 +33,12 @@ olav docker-daemon:ubuntu:24.04
 olav docker-daemon:repo/image@sha256:<digest>
 ```
 
+Use `--resolve-only` to resolve/cache/load an input without starting the TUI. This is useful for CI or validating source access:
+
+```sh
+olav --resolve-only docker://ubuntu:24.04
+```
+
 For `docker://` sources, `olav` pulls the current machine platform by default. Use `--platform os/arch` or `--platform os/arch/variant` to select a specific platform. Use `--platform all` to pull and inspect the full multi-platform image index. `--platform` is rejected for `docker-daemon:` sources.
 
 Remote and daemon images are copied into the cache as OCI layouts before opening. The cache uses `$XDG_CACHE_HOME/olav` or `~/.cache/olav`.
@@ -149,3 +155,7 @@ Layer file hierarchy is preserved.
 - Layer blobs compressed as plain tar, gzip, or zstd
 
 Docker `docker save` archives are intentionally not supported. Convert them to OCI layout first, for example with `skopeo`.
+
+## Maintenance
+
+The repository includes GitHub Actions workflows for unit tests, source integration checks, and daily CodeQL scanning. Renovate is configured to open updates for Go modules and GitHub Actions.

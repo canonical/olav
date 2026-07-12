@@ -1,0 +1,30 @@
+name: CodeQL
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 2 * * *'
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -tags=exclude_graphdriver_btrfs,exclude_graphdriver_zfs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - run: go mod download
+      - uses: github/codeql-action/analyze@v3
