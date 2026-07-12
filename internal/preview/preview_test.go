@@ -98,6 +98,61 @@ func TestBinaryPreview(t *testing.T) {
 	}
 }
 
+func TestSyntaxHighlightingByExtension(t *testing.T) {
+	tests := []struct {
+		title string
+		data  string
+		lang  string
+	}{
+		{title: "app.py", data: "def main():\n    print('hi')\n", lang: "Python"},
+		{title: "entrypoint.sh", data: "#!/bin/bash\necho hi\n", lang: "Shell"},
+		{title: "config.yaml", data: "name: test\nitems:\n  - one\n", lang: "YAML"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			p := New(tt.title, []byte(tt.data), false)
+			if !p.SyntaxColored || p.SyntaxLanguage != tt.lang {
+				t.Fatalf("expected %s highlighting, got colored=%v lang=%q", tt.lang, p.SyntaxColored, p.SyntaxLanguage)
+			}
+			if !strings.Contains(strings.Join(p.Lines, "\n"), "\x1b[") {
+				t.Fatalf("expected ANSI highlighting, got %#v", p.Lines)
+			}
+			if !strings.Contains(p.Notice, "Syntax-highlighted "+tt.lang) {
+				t.Fatalf("unexpected notice: %q", p.Notice)
+			}
+		})
+	}
+}
+
+func TestSyntaxHighlightingByShebang(t *testing.T) {
+	p := New("script", []byte("#!/usr/bin/env python3\nprint('hi')\n"), false)
+	if !p.SyntaxColored || p.SyntaxLanguage != "Python" {
+		t.Fatalf("expected Python shebang detection, got colored=%v lang=%q", p.SyntaxColored, p.SyntaxLanguage)
+	}
+	p = New("script", []byte("#!/usr/bin/env bash\necho hi\n"), false)
+	if !p.SyntaxColored || p.SyntaxLanguage != "Shell" {
+		t.Fatalf("expected shell shebang detection, got colored=%v lang=%q", p.SyntaxColored, p.SyntaxLanguage)
+	}
+}
+
+func TestPlainTextIsNotSyntaxHighlighted(t *testing.T) {
+	p := New("notes.txt", []byte("def not_really_python:\n"), false)
+	if p.SyntaxColored || p.SyntaxLanguage != "" {
+		t.Fatalf("expected no syntax highlighting, got colored=%v lang=%q", p.SyntaxColored, p.SyntaxLanguage)
+	}
+	if strings.Contains(strings.Join(p.Lines, "\n"), "\x1b[") {
+		t.Fatalf("did not expect ANSI highlighting, got %#v", p.Lines)
+	}
+}
+
+func TestSearchWorksWithSyntaxHighlighting(t *testing.T) {
+	p := New("app.py", []byte("def main():\n    print('needle')\n"), false)
+	p.SetSearch("needle")
+	if len(p.SearchMatches) != 1 || p.SearchMatches[0] != 1 {
+		t.Fatalf("unexpected search matches: %#v", p.SearchMatches)
+	}
+}
+
 func TestChiselManifestPreview(t *testing.T) {
 	jsonl := `{"kind":"slice","name":"base","note":"a:b,c"}` + "\n" + `{"kind":"package","name":"bash","deps":["libc","readline"]}` + "\n"
 	p, err := NewChiselManifest("manifest.wall", zstdBytes(t, []byte(jsonl)))

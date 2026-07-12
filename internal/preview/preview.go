@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/alecthomas/chroma/v3/formatters"
+	"github.com/alecthomas/chroma/v3/lexers"
+	"github.com/alecthomas/chroma/v3/styles"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/klauspost/compress/zstd"
 )
@@ -30,6 +34,8 @@ type Preview struct {
 	HScroll        int
 	WrapText       bool
 	LineNumbers    bool
+	SyntaxLanguage string
+	SyntaxColored  bool
 	JSONL          bool
 	ChiselManifest bool
 	jsonlInvalid   bool
@@ -157,6 +163,7 @@ func (p *Preview) render() {
 	content := p.Raw
 	colorPretty := false
 	colorRaw := false
+	colorSyntax := false
 	if p.JSONL {
 		p.CanPretty = true
 		content = p.Raw
@@ -187,6 +194,14 @@ func (p *Preview) render() {
 		} else {
 			p.Notice = "Raw JSON; press p to prettify"
 		}
+	} else if language := detectSyntaxLanguage(p.Title, content); language != "" {
+		p.SyntaxLanguage = language
+		p.SyntaxColored = true
+		p.Notice = "Syntax-highlighted " + language
+		colorSyntax = true
+	} else {
+		p.SyntaxLanguage = ""
+		p.SyntaxColored = false
 	}
 	if p.Truncated {
 		if p.Notice != "" {
@@ -200,10 +215,71 @@ func (p *Preview) render() {
 		p.Lines = strings.Split(colorJSON(text), "\n")
 	} else if colorRaw {
 		p.Lines = colorJSONLLines(p.PlainLines)
+	} else if colorSyntax {
+		p.Lines = syntaxHighlightLines(p.SyntaxLanguage, text)
 	} else {
 		p.Lines = p.PlainLines
 	}
 	p.applySearch()
+}
+
+func detectSyntaxLanguage(title string, content []byte) string {
+	lowerName := strings.ToLower(filepath.Base(title))
+	ext := strings.ToLower(filepath.Ext(lowerName))
+	switch {
+	case ext == ".py" || lowerName == "sconstruct" || lowerName == "sconscript":
+		return "Python"
+	case ext == ".sh" || ext == ".bash" || lowerName == ".bashrc" || lowerName == ".bash_profile" || lowerName == ".profile":
+		return "Shell"
+	case ext == ".yaml" || ext == ".yml":
+		return "YAML"
+	}
+	firstLine := firstLine(string(content))
+	if strings.HasPrefix(firstLine, "#!") {
+		lower := strings.ToLower(firstLine)
+		switch {
+		case strings.Contains(lower, "python"):
+			return "Python"
+		case strings.Contains(lower, "bash") || strings.Contains(lower, "/sh") || strings.Contains(lower, " sh"):
+			return "Shell"
+		}
+	}
+	return ""
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func syntaxHighlightLines(language, text string) []string {
+	lexerName := strings.ToLower(language)
+	if language == "Shell" {
+		lexerName = "bash"
+	}
+	lexer := lexers.Get(lexerName)
+	if lexer == nil {
+		return strings.Split(text, "\n")
+	}
+	formatter := formatters.Get("terminal16m")
+	if formatter == nil {
+		return strings.Split(text, "\n")
+	}
+	style := styles.Get("github-dark")
+	if style == nil {
+		style = styles.Fallback
+	}
+	iterator, err := lexer.Tokenise(nil, text)
+	if err != nil {
+		return strings.Split(text, "\n")
+	}
+	var b strings.Builder
+	if err := formatter.Format(&b, style, iterator); err != nil {
+		return strings.Split(text, "\n")
+	}
+	return strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
 }
 
 func colorJSONLLines(lines []string) []string {

@@ -44,6 +44,7 @@ The bottom line always shows the main key help. Transient messages, search promp
 - Text previews show line numbers by default and can be toggled with `#`.
 - When wrapping is disabled, use horizontal scrolling to inspect long lines.
 - Press `z` while focused on a preview pane to zoom it; press `z` again to restore the split-pane layout.
+- Python, shell, and YAML files are syntax-highlighted in text previews.
 - Zstd-compressed files named `manifest.wall` inside layer tarballs are decompressed in memory and rendered as syntax-colored Chisel manifest JSONL.
 - For Chisel manifest JSONL, `p` toggles readable separator spacing while keeping each JSONL item on one line.
 
