@@ -154,6 +154,10 @@ func (e *Entry) IsText() bool {
 	return e.IsRegular() && preview.IsText(e.Data)
 }
 
+func (e *Entry) IsChiselManifest() bool {
+	return e != nil && e.IsRegular() && path.Base(e.Path) == "manifest.wall" && len(e.Data) >= 4 && bytes.Equal(e.Data[:4], []byte{0x28, 0xb5, 0x2f, 0xfd})
+}
+
 func (e *Entry) Details() []string {
 	if e == nil {
 		return []string{"No entry selected"}
@@ -193,7 +197,9 @@ func (e *Entry) Details() []string {
 		lines = append(lines, "Modified: "+e.ModTime.Format(time.RFC3339))
 	}
 	lines = append(lines, "")
-	if e.IsText() {
+	if e.IsChiselManifest() {
+		lines = append(lines, "Chisel manifest preview is open in the right pane")
+	} else if e.IsText() {
 		lines = append(lines, "Text preview is open in the right pane")
 	} else if e.IsDir() {
 		lines = append(lines, "(directory)")

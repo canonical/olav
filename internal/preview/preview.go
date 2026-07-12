@@ -4,33 +4,38 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/klauspost/compress/zstd"
 )
 
 const MaxPreviewBytes = 2 << 20
 
 type Preview struct {
-	Title         string
-	Notice        string
-	Raw           []byte
-	PlainLines    []string
-	Lines         []string
-	PrettyEnabled bool
-	CanPretty     bool
-	Text          bool
-	Truncated     bool
-	Scroll        int
-	HScroll       int
-	WrapText      bool
-	LineNumbers   bool
-	Search        string
-	SearchMatches []int
-	CurrentMatch  int
+	Title          string
+	Notice         string
+	Raw            []byte
+	PlainLines     []string
+	Lines          []string
+	PrettyEnabled  bool
+	CanPretty      bool
+	Text           bool
+	Truncated      bool
+	Scroll         int
+	HScroll        int
+	WrapText       bool
+	LineNumbers    bool
+	JSONL          bool
+	ChiselManifest bool
+	jsonlInvalid   bool
+	Search         string
+	SearchMatches  []int
+	CurrentMatch   int
 }
 
 func New(title string, data []byte, prettyDefault bool) Preview {
@@ -42,6 +47,35 @@ func New(title string, data []byte, prettyDefault bool) Preview {
 	p.Text = IsText(p.Raw)
 	p.render()
 	return p
+}
+
+func NewChiselManifest(title string, compressed []byte) (Preview, error) {
+	zr, err := zstd.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return Preview{}, err
+	}
+	defer zr.Close()
+
+	data, err := io.ReadAll(io.LimitReader(zr, MaxPreviewBytes+1))
+	if err != nil {
+		return Preview{}, err
+	}
+	p := Preview{
+		Title:          title,
+		Raw:            data,
+		Text:           true,
+		CanPretty:      true,
+		WrapText:       true,
+		LineNumbers:    true,
+		JSONL:          true,
+		ChiselManifest: true,
+	}
+	if len(data) > MaxPreviewBytes {
+		p.Raw = data[:MaxPreviewBytes]
+		p.Truncated = true
+	}
+	p.render()
+	return p, nil
 }
 
 func IsText(data []byte) bool {
@@ -67,6 +101,14 @@ func IsText(data []byte) bool {
 }
 
 func (p *Preview) TogglePretty() string {
+	if p.JSONL {
+		p.PrettyEnabled = !p.PrettyEnabled
+		p.render()
+		if p.PrettyEnabled {
+			return "JSONL readable separators enabled"
+		}
+		return "Raw JSONL view enabled"
+	}
 	if !p.CanPretty && !looksJSON(p.Raw) {
 		return "Cannot prettify non-JSON content"
 	}
@@ -114,7 +156,24 @@ func (p *Preview) render() {
 
 	content := p.Raw
 	colorPretty := false
-	if looksJSON(content) {
+	colorRaw := false
+	if p.JSONL {
+		p.CanPretty = true
+		content = p.Raw
+		if p.PrettyEnabled {
+			content = []byte(spaceJSONLSeparators(string(p.Raw)))
+			p.Notice = "Chisel manifest JSONL decompressed from zstd; readable separators enabled; press p for raw"
+		} else if p.ChiselManifest {
+			p.Notice = "Chisel manifest JSONL decompressed from zstd; press p for readable separators"
+		} else {
+			p.Notice = "JSONL; press p for readable separators"
+		}
+		p.jsonlInvalid = jsonlHasInvalidLines(string(p.Raw))
+		if p.jsonlInvalid {
+			p.Notice += "; some lines are not valid JSON"
+		}
+		colorRaw = true
+	} else if looksJSON(content) {
 		p.CanPretty = true
 		if p.PrettyEnabled {
 			var pretty bytes.Buffer
@@ -139,10 +198,78 @@ func (p *Preview) render() {
 	p.PlainLines = strings.Split(text, "\n")
 	if colorPretty {
 		p.Lines = strings.Split(colorJSON(text), "\n")
+	} else if colorRaw {
+		p.Lines = colorJSONLLines(p.PlainLines)
 	} else {
 		p.Lines = p.PlainLines
 	}
 	p.applySearch()
+}
+
+func colorJSONLLines(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" || !looksJSON([]byte(line)) {
+			out[i] = line
+			continue
+		}
+		out[i] = colorJSON(line)
+	}
+	return out
+}
+
+func jsonlHasInvalidLines(s string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !looksJSON([]byte(line)) {
+			return true
+		}
+	}
+	return false
+}
+
+func spaceJSONLSeparators(s string) string {
+	lines := strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" || !looksJSON([]byte(line)) {
+			continue
+		}
+		lines[i] = spaceJSONSeparators(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func spaceJSONSeparators(s string) string {
+	var b strings.Builder
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		b.WriteByte(c)
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		if c == '"' {
+			inString = true
+			continue
+		}
+		if c == ':' || c == ',' {
+			for i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\t') {
+				i++
+			}
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
 }
 
 func colorJSON(s string) string {

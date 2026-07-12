@@ -11,6 +11,7 @@ import (
 	"github.com/canonical/olav/internal/preview"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestViewDoesNotExceedWindow(t *testing.T) {
@@ -355,6 +356,49 @@ func TestZoomInnerPreview(t *testing.T) {
 	}
 }
 
+func TestSelectChiselManifestCreatesCachedPreview(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 100
+	m.height = 20
+	m.currentLayer = &layer.Layer{Title: "layer", Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}, Entries: map[string]*layer.Entry{}}
+	entry := &layer.Entry{Name: "manifest.wall", Path: "/custom/manifest.wall", Type: tar.TypeReg, Data: zstdTestBytes(t, []byte(`{"kind":"slice","name":"base"}`+"\n")), Parent: m.currentLayer.Root}
+	m.currentLayer.Root.Children = []*layer.Entry{entry}
+	m.currentLayer.Entries["/"] = m.currentLayer.Root
+	m.currentLayer.Entries[entry.Path] = entry
+	m.layerExpanded = map[string]bool{"/": true}
+	m.rebuildLayerRows()
+	m.selectLayer(m.indexOfLayer(entry.Path))
+	if m.innerPreview == nil || !m.innerPreview.ChiselManifest {
+		t.Fatalf("expected chisel manifest preview, got %#v", m.innerPreview)
+	}
+	if len(m.chiselPreviewCache) != 1 {
+		t.Fatalf("expected one cached preview, got %d", len(m.chiselPreviewCache))
+	}
+	first := m.innerPreview
+	m.selectLayer(m.indexOfLayer(entry.Path))
+	if m.innerPreview != first {
+		t.Fatal("expected cached preview reuse")
+	}
+}
+
+func TestNonZstdManifestWallIsNotSpecial(t *testing.T) {
+	m := New(simpleLayout())
+	m.currentLayer = &layer.Layer{Title: "layer", Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}, Entries: map[string]*layer.Entry{}}
+	entry := &layer.Entry{Name: "manifest.wall", Path: "/manifest.wall", Type: tar.TypeReg, Data: []byte("plain text"), Parent: m.currentLayer.Root}
+	m.currentLayer.Root.Children = []*layer.Entry{entry}
+	m.currentLayer.Entries["/"] = m.currentLayer.Root
+	m.currentLayer.Entries[entry.Path] = entry
+	m.layerExpanded = map[string]bool{"/": true}
+	m.rebuildLayerRows()
+	m.selectLayer(m.indexOfLayer(entry.Path))
+	if m.innerPreview == nil {
+		t.Fatal("expected normal text preview")
+	}
+	if m.innerPreview.ChiselManifest {
+		t.Fatal("did not expect chisel preview for non-zstd manifest.wall")
+	}
+}
+
 func simpleLayout() *oci.Layout {
 	return simpleLayoutWithData([]byte(`{"schemaVersion":2}`))
 }
@@ -379,6 +423,20 @@ func tinyTar(t *testing.T) []byte {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
+	return buf.Bytes()
+}
+
+func zstdTestBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
 	return buf.Bytes()
 }
 

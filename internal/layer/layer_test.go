@@ -41,6 +41,17 @@ func TestWhiteoutDetails(t *testing.T) {
 	}
 }
 
+func TestChiselManifestDetails(t *testing.T) {
+	entry := &Entry{Name: "manifest.wall", Path: "/some/path/manifest.wall", Type: tar.TypeReg, Data: []byte{0x28, 0xb5, 0x2f, 0xfd}}
+	if !entry.IsChiselManifest() {
+		t.Fatal("expected chisel manifest detection")
+	}
+	details := strings.Join(entry.Details(), "\n")
+	if !strings.Contains(details, "Chisel manifest preview") {
+		t.Fatalf("unexpected details:\n%s", details)
+	}
+}
+
 func openTestLayer(t *testing.T, mediaType string, data []byte) *Layer {
 	t.Helper()
 	l, err := Open("test", mediaType, data)

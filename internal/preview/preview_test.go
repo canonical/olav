@@ -1,8 +1,11 @@
 package preview
 
 import (
+	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestJSONPrettyToggle(t *testing.T) {
@@ -93,6 +96,65 @@ func TestBinaryPreview(t *testing.T) {
 	if !containsLine(p.Lines, "Binary file") {
 		t.Fatalf("expected binary notice, got %#v", p.Lines)
 	}
+}
+
+func TestChiselManifestPreview(t *testing.T) {
+	jsonl := `{"kind":"slice","name":"base","note":"a:b,c"}` + "\n" + `{"kind":"package","name":"bash","deps":["libc","readline"]}` + "\n"
+	p, err := NewChiselManifest("manifest.wall", zstdBytes(t, []byte(jsonl)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.JSONL || !p.ChiselManifest || !p.CanPretty || p.PrettyEnabled {
+		t.Fatalf("unexpected chisel preview state: %#v", p)
+	}
+	if !strings.Contains(p.Notice, "Chisel manifest JSONL") {
+		t.Fatalf("unexpected notice: %q", p.Notice)
+	}
+	if len(p.PlainLines) < 2 {
+		t.Fatalf("expected JSONL lines, got %#v", p.PlainLines)
+	}
+	if !strings.Contains(strings.Join(p.Lines, "\n"), "\x1b[") {
+		t.Fatalf("expected colored JSONL lines: %#v", p.Lines)
+	}
+
+	msg := p.TogglePretty()
+	if msg != "JSONL readable separators enabled" {
+		t.Fatalf("unexpected toggle message: %q", msg)
+	}
+	joined := strings.Join(p.PlainLines, "\n")
+	if !strings.Contains(joined, `"kind": "slice"`) || !strings.Contains(joined, `"note": "a:b,c"`) {
+		t.Fatalf("expected readable separators without changing string values: %s", joined)
+	}
+	if strings.Contains(joined, "\n  ") {
+		t.Fatalf("expected one-line JSONL items, got %q", joined)
+	}
+}
+
+func TestChiselManifestInvalidJSONLLine(t *testing.T) {
+	p, err := NewChiselManifest("manifest.wall", zstdBytes(t, []byte("{\"ok\":true}\nnot-json\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(p.Notice, "some lines are not valid JSON") {
+		t.Fatalf("expected invalid JSONL notice, got %q", p.Notice)
+	}
+	if !containsLine(p.PlainLines, "not-json") {
+		t.Fatalf("expected invalid line to be preserved: %#v", p.PlainLines)
+	}
+}
+
+func zstdBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+	return buf.Bytes()
 }
 
 func containsLine(lines []string, needle string) bool {

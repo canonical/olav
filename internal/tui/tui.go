@@ -43,13 +43,14 @@ type Model struct {
 
 	preview *preview.Preview
 
-	layerCache       map[string]*layer.Layer
-	currentLayer     *layer.Layer
-	loadingLayerPath string
-	layerRows        []layerRow
-	selectedLayerRow int
-	layerExpanded    map[string]bool
-	innerPreview     *preview.Preview
+	layerCache         map[string]*layer.Layer
+	currentLayer       *layer.Layer
+	loadingLayerPath   string
+	layerRows          []layerRow
+	selectedLayerRow   int
+	layerExpanded      map[string]bool
+	innerPreview       *preview.Preview
+	chiselPreviewCache map[string]*preview.Preview
 }
 
 type layerLoadedMsg struct {
@@ -81,10 +82,11 @@ var (
 
 func New(layout *oci.Layout) Model {
 	m := Model{
-		layout:        layout,
-		ociExpanded:   map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
-		layerCache:    map[string]*layer.Layer{},
-		layerExpanded: map[string]bool{"/": true},
+		layout:             layout,
+		ociExpanded:        map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
+		layerCache:         map[string]*layer.Layer{},
+		layerExpanded:      map[string]bool{"/": true},
+		chiselPreviewCache: map[string]*preview.Preview{},
 	}
 	m.rebuildOCIRows()
 	m.selectOCI(0)
@@ -409,10 +411,32 @@ func (m *Model) selectLayer(i int) {
 	m.selectedLayerRow = i
 	e := m.layerRows[i].entry
 	m.innerPreview = nil
+	if e.IsChiselManifest() {
+		m.selectChiselManifest(e)
+		return
+	}
 	if e.IsText() {
 		p := preview.New(e.Path, e.Data, false)
 		m.innerPreview = &p
 	}
+}
+
+func (m *Model) selectChiselManifest(e *layer.Entry) {
+	if m.currentLayer == nil || e == nil {
+		return
+	}
+	key := m.currentLayer.Title + ":" + e.Path
+	if cached := m.chiselPreviewCache[key]; cached != nil {
+		m.innerPreview = cached
+		return
+	}
+	p, err := preview.NewChiselManifest(e.Path, e.Data)
+	if err != nil {
+		m.message = "Failed to decompress chisel manifest: " + err.Error()
+		return
+	}
+	m.chiselPreviewCache[key] = &p
+	m.innerPreview = &p
 }
 
 func (m *Model) nextFocus() {
