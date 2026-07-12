@@ -25,11 +25,14 @@ const (
 type Model struct {
 	layout *oci.Layout
 
-	width   int
-	height  int
-	focus   focus
-	message string
-	pending tea.Cmd
+	width          int
+	height         int
+	focus          focus
+	message        string
+	pending        tea.Cmd
+	zoomed         bool
+	zoomTarget     focus
+	overlayMessage string
 
 	ociRows      []treeRow
 	selectedOCI  int
@@ -55,7 +58,7 @@ type layerLoadedMsg struct {
 	err   error
 }
 
-const helpText = "Tab focus | j/k move | Space toggle/page | Enter open | / search | p pretty | w wrap | # lines | e export | q quit"
+const helpText = "Tab focus | j/k move | Space toggle/page | z zoom | / search | p pretty | w wrap | # lines | e export | q quit"
 
 type treeRow struct {
 	node  *oci.Node
@@ -128,8 +131,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "?":
-			m.message = "Keys: Tab focus, Space toggle/page, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
+			m.message = "Keys: Tab focus, Space toggle/page, z zoom, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
 		case "tab":
+			if m.zoomed {
+				m.overlayMessage = "Press z again to exit zoom state."
+				break
+			}
 			m.nextFocus()
 		case "/":
 			m.searchMode = true
@@ -146,6 +153,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleWrap()
 		case "#":
 			m.toggleLineNumbers()
+		case "z":
+			m.toggleZoom()
 		case "e":
 			m.exportSelected()
 		case "enter":
@@ -210,7 +219,9 @@ func (m Model) View() string {
 
 	leftW := max(24, m.width/3)
 	var body string
-	if m.innerPreview != nil && m.currentLayer != nil {
+	if m.zoomed {
+		body = m.renderZoomed(bodyH)
+	} else if m.innerPreview != nil && m.currentLayer != nil {
 		midW := max(28, (m.width-leftW)/2)
 		rightW := max(20, m.width-leftW-midW)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.renderOCI(leftW, bodyH), m.renderLayer(midW, bodyH), m.renderInnerPreview(rightW, bodyH))
@@ -223,7 +234,9 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, m.renderOCI(leftW, bodyH), right)
 	}
 	if m.loadingLayerPath != "" {
-		body = m.renderOverlay(body, bodyH)
+		body = m.renderOverlay(body, bodyH, []string{"Extracting tarball.", "This can take a while for large tarballs."})
+	} else if m.overlayMessage != "" {
+		body = m.renderOverlay(body, bodyH, []string{m.overlayMessage})
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, messageLine, helpLine)
 }
@@ -627,6 +640,30 @@ func (m *Model) toggleLineNumbers() {
 	}
 }
 
+func (m *Model) toggleZoom() {
+	if m.zoomed {
+		m.zoomed = false
+		m.overlayMessage = ""
+		m.message = "preview zoom disabled"
+		return
+	}
+	if m.focus == focusPreview && m.preview != nil {
+		m.zoomed = true
+		m.zoomTarget = focusPreview
+		m.overlayMessage = ""
+		m.message = "preview zoom enabled"
+		return
+	}
+	if m.focus == focusInnerPreview && m.innerPreview != nil {
+		m.zoomed = true
+		m.zoomTarget = focusInnerPreview
+		m.overlayMessage = ""
+		m.message = "preview zoom enabled"
+		return
+	}
+	m.message = "focus a text preview to zoom"
+}
+
 func (m *Model) exportSelected() {
 	if m.focus == focusLayer || m.focus == focusInnerPreview {
 		if len(m.layerRows) == 0 || m.currentLayer == nil {
@@ -740,7 +777,23 @@ func (m *Model) renderInnerPreview(width, height int) string {
 	return pane(m.focus == focusInnerPreview, width, height).Render(fixedBlock(lines, contentW, contentH))
 }
 
-func (m *Model) renderOverlay(body string, height int) string {
+func (m *Model) renderZoomed(height int) string {
+	switch m.zoomTarget {
+	case focusPreview:
+		if m.preview != nil {
+			return m.renderPreview(m.width, height)
+		}
+	case focusInnerPreview:
+		if m.innerPreview != nil {
+			return m.renderInnerPreview(m.width, height)
+		}
+	}
+	leftW := max(24, m.width/3)
+	rightW := max(24, m.width-leftW)
+	return lipgloss.JoinHorizontal(lipgloss.Top, m.renderOCI(leftW, height), m.renderPreview(rightW, height))
+}
+
+func (m *Model) renderOverlay(body string, height int, overlayText []string) string {
 	lines := strings.Split(body, "\n")
 	for len(lines) < height {
 		lines = append(lines, strings.Repeat(" ", m.width))
@@ -751,11 +804,12 @@ func (m *Model) renderOverlay(body string, height int) string {
 
 	overlayW := min(max(48, m.width/2), max(24, m.width-4))
 	contentW := max(1, overlayW-4)
-	overlayLines := []string{
-		centerLine("Extracting tarball.", contentW),
-		centerLine("This can take a while for large tarballs.", contentW),
+	overlayH := max(3, len(overlayText)+2)
+	overlayLines := make([]string, 0, len(overlayText))
+	for _, text := range overlayText {
+		overlayLines = append(overlayLines, centerLine(text, contentW))
 	}
-	overlay := pane(false, overlayW, 4).Render(fixedBlock(overlayLines, contentW, contentHeight(4)))
+	overlay := pane(false, overlayW, overlayH).Render(fixedBlock(overlayLines, contentW, contentHeight(overlayH)))
 	olines := strings.Split(overlay, "\n")
 	startY := max(0, (height-len(olines))/2)
 	startX := max(0, (m.width-overlayW)/2)
@@ -887,6 +941,9 @@ func (m *Model) previewHeight() int {
 }
 
 func (m *Model) previewContentWidth() int {
+	if m.zoomed {
+		return contentWidth(m.width)
+	}
 	leftW := max(24, m.width/3)
 	if m.focus == focusInnerPreview && m.innerPreview != nil && m.currentLayer != nil {
 		midW := max(28, (m.width-leftW)/2)

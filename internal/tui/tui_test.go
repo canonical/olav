@@ -8,6 +8,7 @@ import (
 
 	"github.com/canonical/olav/internal/layer"
 	"github.com/canonical/olav/internal/oci"
+	"github.com/canonical/olav/internal/preview"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -268,6 +269,89 @@ func TestQuestionMarkSetsMessage(t *testing.T) {
 	m = updated.(Model)
 	if !strings.Contains(m.message, "Keys:") {
 		t.Fatalf("expected extended help message, got %q", m.message)
+	}
+}
+
+func TestZoomTopLevelPreview(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.zoomed || m.zoomTarget != focusPreview {
+		t.Fatalf("expected top-level preview zoom, zoomed=%v target=%v", m.zoomed, m.zoomTarget)
+	}
+	view := m.View()
+	if strings.Contains(view, "OCI Files") {
+		t.Fatalf("expected zoomed view to hide OCI tree:\n%s", view)
+	}
+	if !strings.Contains(view, "Preview: /index.json") {
+		t.Fatalf("expected preview in zoomed view:\n%s", view)
+	}
+	if got := m.previewContentWidth(); got != contentWidth(m.width) {
+		t.Fatalf("previewContentWidth = %d, want %d", got, contentWidth(m.width))
+	}
+	assertViewFits(t, view, m.width, m.height)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomed {
+		t.Fatal("expected z to unzoom")
+	}
+}
+
+func TestZoomOnlyWorksForFocusedPreview(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.focus = focusOCI
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if m.zoomed {
+		t.Fatal("expected tree focus not to zoom")
+	}
+	if !strings.Contains(m.message, "focus a text preview") {
+		t.Fatalf("unexpected message: %q", m.message)
+	}
+}
+
+func TestTabWhileZoomedShowsOverlay(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	m.toggleZoom()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.focus != focusPreview {
+		t.Fatalf("expected focus to remain preview, got %v", m.focus)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Press z again to exit zoom state.") {
+		t.Fatalf("expected zoom exit overlay:\n%s", view)
+	}
+	assertViewFits(t, view, m.width, m.height)
+}
+
+func TestZoomInnerPreview(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 100
+	m.height = 20
+	m.focus = focusInnerPreview
+	p := preview.New("/etc/os-release", []byte("NAME=test\n"), false)
+	m.innerPreview = &p
+	m.currentLayer = &layer.Layer{Root: &layer.Entry{Name: "/", Path: "/", Type: tar.TypeDir}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m = updated.(Model)
+	if !m.zoomed || m.zoomTarget != focusInnerPreview {
+		t.Fatalf("expected inner preview zoom, zoomed=%v target=%v", m.zoomed, m.zoomTarget)
+	}
+	view := m.View()
+	if !strings.Contains(view, "File Preview") || strings.Contains(view, "OCI Files") {
+		t.Fatalf("unexpected zoomed inner preview:\n%s", view)
 	}
 }
 

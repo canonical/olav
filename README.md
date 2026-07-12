@@ -22,6 +22,7 @@ go run ./cmd/olav <oci-layout-dir-or-tarball>
 - `p`: toggle raw/pretty JSON for the focused preview
 - `w`: toggle wrapping for the focused preview
 - `#`: toggle line numbers for the focused preview
+- `z`: toggle zoom for the focused preview
 - `e`: export selected file to `./olav-export/`
 - `g` / `G`: jump to top/bottom
 - `f` / `b`: page down/up in previews
@@ -42,6 +43,7 @@ The bottom line always shows the main key help. Transient messages, search promp
 - Text previews wrap by default and can be toggled with `w`.
 - Text previews show line numbers by default and can be toggled with `#`.
 - When wrapping is disabled, use horizontal scrolling to inspect long lines.
+- Press `z` while focused on a preview pane to zoom it; press `z` again to restore the split-pane layout.
 
 ## Layer Tarballs
 
