@@ -18,16 +18,20 @@ func TestIsNamedDigestRef(t *testing.T) {
 	}
 }
 
-func TestFindImageIDByRepoDigest(t *testing.T) {
+func TestFindImageRefByRepoDigest(t *testing.T) {
 	images := []imageTypes.Summary{
 		{ID: "sha256:config-a", RepoDigests: []string{"example.com/a@sha256:aaa"}},
-		{ID: "sha256:config-b", RepoDigests: []string{"example.com/b@sha256:bbb", "example.com/b@sha256:ccc"}},
+		{ID: "sha256:config-b", RepoTags: []string{"example.com/b:tag"}, RepoDigests: []string{"example.com/b@sha256:bbb", "example.com/b@sha256:ccc"}},
 	}
-	got, ok := findImageIDByRepoDigest(images, "example.com/b@sha256:ccc")
-	if !ok || got != "sha256:config-b" {
-		t.Fatalf("got id=%q ok=%v", got, ok)
+	got, ok := findImageRefByRepoDigest(images, "example.com/b@sha256:ccc")
+	if !ok || got != "example.com/b:tag" {
+		t.Fatalf("got ref=%q ok=%v", got, ok)
 	}
-	if _, ok := findImageIDByRepoDigest(images, "example.com/missing@sha256:ddd"); ok {
+	got, ok = findImageRefByRepoDigest(images, "example.com/a@sha256:aaa")
+	if !ok || got != "sha256:config-a" {
+		t.Fatalf("got fallback ref=%q ok=%v", got, ok)
+	}
+	if _, ok := findImageRefByRepoDigest(images, "example.com/missing@sha256:ddd"); ok {
 		t.Fatal("did not expect missing digest match")
 	}
 }

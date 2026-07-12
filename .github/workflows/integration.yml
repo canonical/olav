@@ -9,7 +9,6 @@ jobs:
   image-sources:
     runs-on: ubuntu-latest
     env:
-      GOFLAGS: -tags=exclude_graphdriver_btrfs,exclude_graphdriver_zfs
       XDG_CACHE_HOME: ${{ github.workspace }}/.cache
       TEST_IMAGE: busybox:1.36
     steps:

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 func TestResolveLocalInputs(t *testing.T) {
@@ -76,15 +78,27 @@ func TestAuthHint(t *testing.T) {
 	}
 }
 
-func TestParseSourceReference(t *testing.T) {
-	if _, err := parseSourceReference("docker://ubuntu:24.04"); err != nil {
-		t.Fatalf("expected docker:// reference to parse: %v", err)
+func TestResolveAuthFromContainersFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.json")
+	writeFile(t, path, []byte(`{"auths":{"example.com":{"auth":"dXNlcjpwYXNz"}}}`))
+	target, err := name.NewRegistry("example.com")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := parseSourceReference("docker-daemon:ubuntu:24.04"); err != nil {
-		t.Fatalf("expected docker-daemon reference to parse: %v", err)
+	auth, ok, err := resolveAuthFromFile(path, target)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := parseSourceReference("ubuntu:24.04"); err == nil {
-		t.Fatal("expected unsupported reference to fail")
+	if !ok {
+		t.Fatal("expected auth match")
+	}
+	cfg, err := auth.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Username != "user" || cfg.Password != "pass" {
+		t.Fatalf("unexpected auth config: %#v", cfg)
 	}
 }
 

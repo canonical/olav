@@ -45,9 +45,11 @@ Remote and daemon images are copied into the cache as OCI layouts before opening
 
 During image copy, `olav` prints simple progress information to stderr before entering the TUI.
 
-Authentication uses the default containers/image locations:
+Authentication uses Docker and containers auth-file locations:
 
 - `~/.docker/config.json`
+- `$DOCKER_CONFIG/config.json`
+- `$REGISTRY_AUTH_FILE`
 - `${XDG_RUNTIME_DIR}/containers/auth.json`
 - `~/.config/containers/auth.json`
 

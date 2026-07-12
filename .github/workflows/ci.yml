@@ -7,8 +7,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      GOFLAGS: -tags=exclude_graphdriver_btrfs,exclude_graphdriver_zfs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
