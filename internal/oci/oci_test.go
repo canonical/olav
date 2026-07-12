@@ -65,16 +65,7 @@ func TestCompressionAndLayerMediaHelpers(t *testing.T) {
 }
 
 func TestNestedIndexAnnotatesLayers(t *testing.T) {
-	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`))
-	layerData := []byte("layer")
-	layerDigest := writeBlob(t, dir, layerData)
-	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"` + layerDigest + `","size":` + strconv.Itoa(len(layerData)) + `}]}`)
-	manifestDigest := writeBlob(t, dir, manifest)
-	nestedIndex := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + manifestDigest + `","size":` + strconv.Itoa(len(manifest)) + `}]}`)
-	nestedDigest := writeBlob(t, dir, nestedIndex)
-	index := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"` + nestedDigest + `","size":` + strconv.Itoa(len(nestedIndex)) + `}]}`)
-	mustWrite(t, filepath.Join(dir, "index.json"), index)
+	dir, layerDigest := makeNestedIndexLayout(t)
 	l, err := Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +74,53 @@ func TestNestedIndexAnnotatesLayers(t *testing.T) {
 	if node == nil || node.Blob == nil || node.Blob.MediaType != "application/vnd.oci.image.layer.v1.tar+gzip" {
 		t.Fatalf("expected nested layer annotation, got %#v", node)
 	}
+}
+
+func TestGraphContainsPlatformManifestAndLayer(t *testing.T) {
+	dir, layerDigest := makeNestedIndexLayout(t)
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.GraphRoot == nil || len(l.GraphRoot.Children) == 0 {
+		t.Fatal("expected graph root with children")
+	}
+	if !graphContains(l.GraphRoot, "linux/amd64") {
+		t.Fatalf("expected graph to contain platform node: %#v", l.GraphRoot)
+	}
+	if !graphContains(l.GraphRoot, shortDigest(layerDigest)) {
+		t.Fatalf("expected graph to contain layer digest %s", layerDigest)
+	}
+}
+
+func makeNestedIndexLayout(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`))
+	layerData := []byte("layer")
+	layerDigest := writeBlob(t, dir, layerData)
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"` + layerDigest + `","size":` + strconv.Itoa(len(layerData)) + `}]}`)
+	manifestDigest := writeBlob(t, dir, manifest)
+	nestedIndex := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + manifestDigest + `","size":` + strconv.Itoa(len(manifest)) + `,"platform":{"os":"linux","architecture":"amd64"}}]}`)
+	nestedDigest := writeBlob(t, dir, nestedIndex)
+	index := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"` + nestedDigest + `","size":` + strconv.Itoa(len(nestedIndex)) + `}]}`)
+	mustWrite(t, filepath.Join(dir, "index.json"), index)
+	return dir, layerDigest
+}
+
+func graphContains(n *GraphNode, needle string) bool {
+	if n == nil {
+		return false
+	}
+	if strings.Contains(n.Label, needle) || strings.Contains(n.Platform, needle) || strings.Contains(n.Digest, needle) {
+		return true
+	}
+	for _, child := range n.Children {
+		if graphContains(child, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func makeOCILayout(t *testing.T) string {

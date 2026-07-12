@@ -161,6 +161,159 @@ func TestSpaceTogglesOCIFolder(t *testing.T) {
 	}
 }
 
+func TestToggleImageGraphView(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.focus = focusOCI
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	m = updated.(Model)
+	if m.leftView != leftViewGraph {
+		t.Fatal("expected graph view")
+	}
+	view := m.View()
+	if !strings.Contains(view, "Image Graph") {
+		t.Fatalf("expected image graph header:\n%s", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
+	m = updated.(Model)
+	if m.leftView != leftViewOCI {
+		t.Fatal("expected OCI view")
+	}
+}
+
+func TestGraphExpandedByDefault(t *testing.T) {
+	layout := simpleLayout()
+	child := &oci.GraphNode{Label: "child", Kind: oci.GraphIndex}
+	grandchild := &oci.GraphNode{Label: "grandchild", Kind: oci.GraphManifest, BlobPath: "/index.json"}
+	child.Children = []*oci.GraphNode{grandchild}
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{child}}
+	m := New(layout)
+	m.width = 80
+	m.height = 16
+	m.focus = focusOCI
+	m.leftView = leftViewGraph
+	m.rebuildGraphRows()
+	view := m.View()
+	if !strings.Contains(view, "grandchild") {
+		t.Fatalf("expected graph nodes expanded by default:\n%s", view)
+	}
+}
+
+func TestCtrlSpaceTogglesAllGraphNodes(t *testing.T) {
+	layout := simpleLayout()
+	child := &oci.GraphNode{Label: "child", Kind: oci.GraphIndex}
+	grandchild := &oci.GraphNode{Label: "grandchild", Kind: oci.GraphManifest, BlobPath: "/index.json"}
+	child.Children = []*oci.GraphNode{grandchild}
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{child}}
+	m := New(layout)
+	m.width = 80
+	m.height = 16
+	m.focus = focusOCI
+	m.leftView = leftViewGraph
+	m.rebuildGraphRows()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "grandchild") {
+		t.Fatalf("expected ctrl+space to collapse graph nodes:\n%s", view)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlAt})
+	m = updated.(Model)
+	view = m.View()
+	if !strings.Contains(view, "grandchild") {
+		t.Fatalf("expected ctrl+space to expand graph nodes:\n%s", view)
+	}
+}
+
+func TestGraphSelectionPreviewsBlob(t *testing.T) {
+	layout := simpleLayout()
+	manifest := &oci.GraphNode{Label: "manifest abc", Kind: oci.GraphManifest, BlobPath: "/index.json", Digest: "sha256:abc"}
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{manifest}}
+	m := New(layout)
+	m.width = 80
+	m.height = 16
+	m.focus = focusOCI
+	m.leftView = leftViewGraph
+	m.graphExpanded[m.graphKey(layout.GraphRoot)] = true
+	m.rebuildGraphRows()
+	m.selectGraph(1)
+	if m.selectedOCINodePath() != "/index.json" {
+		t.Fatalf("expected graph selection to sync raw OCI selection, got %s", m.selectedOCINodePath())
+	}
+	if m.preview == nil || !strings.Contains(strings.Join(m.preview.PlainLines, "\n"), "schemaVersion") {
+		t.Fatalf("expected graph blob preview, got %#v", m.preview)
+	}
+}
+
+func TestGraphLayerOpenDisplaysAfterLoad(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "0")
+	layout := layoutWithLayerNodes(1)
+	layerNode := layout.Files["/blobs/sha256/layer0"]
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{{Label: "layer 1", Kind: oci.GraphLayer, BlobPath: layerNode.Path, Digest: layerNode.Blob.Digest}}}
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.focus = focusOCI
+	m.leftView = leftViewGraph
+	m.rebuildGraphRows()
+	m.selectGraph(1)
+	m.openOrExpand()
+	if m.loadingLayerPath != layerNode.Path {
+		t.Fatalf("expected explicit graph open to start layer load, got %q", m.loadingLayerPath)
+	}
+	lt := mustOpenLayerForTest(t, layerNode.Path, layerNode.Blob.MediaType, layerNode.Data)
+	updated, _ := m.Update(layerLoadedMsg{path: layerNode.Path, layer: lt})
+	m = updated.(Model)
+	if m.currentLayer != lt {
+		t.Fatal("expected graph-opened layer to be displayed after load")
+	}
+	view := m.View()
+	if strings.Contains(view, "Select a file to preview") || !strings.Contains(view, "Layer:") {
+		t.Fatalf("expected layer pane after graph open:\n%s", view)
+	}
+}
+
+func TestGraphLayerStaleLoadDoesNotDisplay(t *testing.T) {
+	t.Setenv("MAX_NUM_AUTO_TARBALL_EXTRACTION", "0")
+	layout := layoutWithLayerNodes(1)
+	layerNode := layout.Files["/blobs/sha256/layer0"]
+	summary := &oci.GraphNode{Label: "linux/amd64", Kind: oci.GraphPlatform, Summary: []string{"Platform: linux/amd64"}}
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{{Label: "layer 1", Kind: oci.GraphLayer, BlobPath: layerNode.Path, Digest: layerNode.Blob.Digest}, summary}}
+	m := New(layout)
+	m.width = 90
+	m.height = 20
+	m.focus = focusOCI
+	m.leftView = leftViewGraph
+	m.rebuildGraphRows()
+	m.selectGraph(1)
+	m.openOrExpand()
+	m.selectGraph(2)
+	lt := mustOpenLayerForTest(t, layerNode.Path, layerNode.Blob.MediaType, layerNode.Data)
+	updated, _ := m.Update(layerLoadedMsg{path: layerNode.Path, layer: lt})
+	m = updated.(Model)
+	if m.currentLayer == lt {
+		t.Fatal("stale graph layer load should not replace current graph selection")
+	}
+	if m.layerCache[layerNode.Path] != lt {
+		t.Fatal("stale graph layer load should still be cached")
+	}
+}
+
+func TestGraphSummarySelection(t *testing.T) {
+	layout := simpleLayout()
+	summary := &oci.GraphNode{Label: "linux/amd64", Kind: oci.GraphPlatform, Summary: []string{"Platform: linux/amd64"}}
+	layout.GraphRoot = &oci.GraphNode{Label: "index.json", Kind: oci.GraphRoot, Children: []*oci.GraphNode{summary}}
+	m := New(layout)
+	m.leftView = leftViewGraph
+	m.graphExpanded[m.graphKey(layout.GraphRoot)] = true
+	m.rebuildGraphRows()
+	m.selectGraph(1)
+	if m.preview == nil || !strings.Contains(strings.Join(m.preview.PlainLines, "\n"), "Platform: linux/amd64") {
+		t.Fatalf("expected summary preview, got %#v", m.preview)
+	}
+}
+
 func TestLayerLoadingOverlayAndSelection(t *testing.T) {
 	root := &oci.Node{Name: "/", Path: "/", IsDir: true}
 	blob := &oci.Node{Name: "abc", Path: "/blobs/sha256/abc", Data: []byte("not-a-tar"), Parent: root, Blob: &oci.BlobInfo{MediaType: "application/vnd.oci.image.layer.v1.tar"}}
@@ -700,6 +853,15 @@ func tinyTarForLayout() []byte {
 	_, _ = tw.Write([]byte("x"))
 	_ = tw.Close()
 	return buf.Bytes()
+}
+
+func mustOpenLayerForTest(t *testing.T, title, mediaType string, data []byte) *layer.Layer {
+	t.Helper()
+	lt, err := layer.Open(title, mediaType, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lt
 }
 
 func modelWithLayerEntries() Model {

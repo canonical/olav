@@ -21,6 +21,7 @@ type Layout struct {
 	Root      *Node
 	Files     map[string]*Node
 	Blobs     map[string]*BlobInfo
+	GraphRoot *GraphNode
 }
 
 type Node struct {
@@ -41,6 +42,57 @@ type BlobInfo struct {
 	Encoded   string
 	MediaType string
 	Role      string
+}
+
+type GraphKind int
+
+const (
+	GraphRoot GraphKind = iota
+	GraphIndex
+	GraphPlatform
+	GraphManifest
+	GraphConfig
+	GraphLayer
+	GraphArtifact
+	GraphBlob
+	GraphSummary
+)
+
+type GraphNode struct {
+	Label     string
+	Kind      GraphKind
+	Digest    string
+	MediaType string
+	Platform  string
+	Size      int64
+	BlobPath  string
+	Summary   []string
+	Children  []*GraphNode
+}
+
+func (k GraphKind) String() string {
+	switch k {
+	case GraphRoot:
+		return "root"
+	case GraphIndex:
+		return "index"
+	case GraphPlatform:
+		return "platform"
+	case GraphManifest:
+		return "manifest"
+	case GraphConfig:
+		return "config"
+	case GraphLayer:
+		return "layer"
+	case GraphArtifact:
+		return "artifact"
+	case GraphBlob:
+		return "blob"
+	case GraphSummary:
+		return "summary"
+	default:
+		return "unknown"
+	}
 }
 
 type descriptor struct {
@@ -105,6 +157,7 @@ func Load(input string) (*Layout, error) {
 	}
 
 	l.annotateBlobs()
+	l.GraphRoot = l.buildGraph()
 	sortTree(l.Root)
 	return l, nil
 }
@@ -303,6 +356,171 @@ func (l *Layout) annotateManifest(digest string, visited map[string]bool) {
 	if mf.Subject != nil {
 		l.annotateDescriptor(*mf.Subject, "subject", visited)
 	}
+}
+
+func (l *Layout) buildGraph() *GraphNode {
+	root := &GraphNode{Label: "index.json", Kind: GraphRoot, BlobPath: "/index.json"}
+	idxNode := l.Files["/index.json"]
+	if idxNode == nil {
+		return root
+	}
+	var idx indexFile
+	if json.Unmarshal(idxNode.Data, &idx) != nil {
+		return root
+	}
+	visited := map[string]bool{}
+	for _, desc := range idx.Manifests {
+		root.Children = append(root.Children, l.graphDescriptor(desc, "manifest", visited))
+	}
+	return root
+}
+
+func (l *Layout) graphDescriptor(desc descriptor, fallbackRole string, visited map[string]bool) *GraphNode {
+	node := &GraphNode{
+		Label:     graphLabel(desc, fallbackRole),
+		Kind:      graphKind(desc, fallbackRole),
+		Digest:    desc.Digest,
+		MediaType: desc.MediaType,
+		Platform:  platformLabel(desc.Platform),
+		Size:      desc.Size,
+		BlobPath:  l.blobPath(desc.Digest),
+	}
+	if desc.Digest == "" || visited[desc.Digest] {
+		return node
+	}
+	visited[desc.Digest] = true
+	if IsIndexMediaType(desc.MediaType) {
+		l.graphIndex(node, desc.Digest, visited)
+		return node
+	}
+	if IsManifestMediaType(desc.MediaType) || desc.MediaType == "" {
+		l.graphManifest(node, desc, visited)
+	}
+	return node
+}
+
+func (l *Layout) graphIndex(parent *GraphNode, digest string, visited map[string]bool) {
+	node := l.nodeByDigest(digest)
+	if node == nil {
+		return
+	}
+	var idx imageIndexFile
+	if json.Unmarshal(node.Data, &idx) != nil {
+		return
+	}
+	for _, desc := range idx.Manifests {
+		child := l.graphDescriptor(desc, "manifest", visited)
+		if child.Platform != "" && child.Platform != "unknown/unknown" {
+			platform := &GraphNode{Label: child.Platform, Kind: GraphPlatform, Platform: child.Platform, Summary: []string{"Platform: " + child.Platform, "Manifest: " + desc.Digest, "Media type: " + desc.MediaType}}
+			platform.Children = append(platform.Children, child)
+			parent.Children = append(parent.Children, platform)
+		} else {
+			parent.Children = append(parent.Children, child)
+		}
+	}
+}
+
+func (l *Layout) graphManifest(parent *GraphNode, desc descriptor, visited map[string]bool) {
+	node := l.nodeByDigest(desc.Digest)
+	if node == nil {
+		return
+	}
+	var mf manifestFile
+	if json.Unmarshal(node.Data, &mf) != nil {
+		return
+	}
+	parent.Summary = []string{"Manifest: " + desc.Digest, "Media type: " + desc.MediaType}
+	if desc.Platform != nil {
+		parent.Summary = append(parent.Summary, "Platform: "+platformLabel(desc.Platform))
+	}
+	if mf.Config.Digest != "" {
+		parent.Children = append(parent.Children, l.graphLeaf(mf.Config, GraphConfig, "config"))
+	}
+	for i, layerDesc := range mf.Layers {
+		role := fmt.Sprintf("layer %d", i+1)
+		parent.Children = append(parent.Children, l.graphLeaf(layerDesc, GraphLayer, role))
+	}
+	for _, blob := range mf.Blobs {
+		parent.Children = append(parent.Children, l.graphDescriptor(blob, "artifact", visited))
+	}
+	if mf.Subject != nil {
+		parent.Children = append(parent.Children, l.graphDescriptor(*mf.Subject, "subject", visited))
+	}
+}
+
+func (l *Layout) graphLeaf(desc descriptor, kind GraphKind, role string) *GraphNode {
+	return &GraphNode{Label: graphLabel(desc, role), Kind: kind, Digest: desc.Digest, MediaType: desc.MediaType, Size: desc.Size, BlobPath: l.blobPath(desc.Digest), Summary: []string{titleWord(role) + ": " + desc.Digest, "Media type: " + desc.MediaType, fmt.Sprintf("Size: %d bytes", desc.Size)}}
+}
+
+func titleWord(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func graphKind(desc descriptor, fallbackRole string) GraphKind {
+	if IsIndexMediaType(desc.MediaType) {
+		return GraphIndex
+	}
+	if IsManifestMediaType(desc.MediaType) || strings.Contains(strings.ToLower(fallbackRole), "manifest") {
+		return GraphManifest
+	}
+	return GraphBlob
+}
+
+func graphLabel(desc descriptor, fallbackRole string) string {
+	short := shortDigest(desc.Digest)
+	role := roleForMediaType(desc.MediaType, fallbackRole)
+	if role == "" {
+		role = fallbackRole
+	}
+	if short == "" {
+		return role
+	}
+	if desc.Size > 0 {
+		return fmt.Sprintf("%s %s  %d B", role, short, desc.Size)
+	}
+	return role + " " + short
+}
+
+func platformLabel(platform map[string]string) string {
+	if platform == nil {
+		return ""
+	}
+	os := platform["os"]
+	arch := platform["architecture"]
+	variant := platform["variant"]
+	if os == "" && arch == "" {
+		return ""
+	}
+	if variant != "" {
+		return os + "/" + arch + "/" + variant
+	}
+	return os + "/" + arch
+}
+
+func shortDigest(digest string) string {
+	if digest == "" {
+		return ""
+	}
+	parts := strings.SplitN(digest, ":", 2)
+	encoded := digest
+	if len(parts) == 2 {
+		encoded = parts[1]
+	}
+	if len(encoded) > 12 {
+		encoded = encoded[:12] + "..."
+	}
+	return encoded
+}
+
+func (l *Layout) blobPath(digest string) string {
+	blob, ok := l.Blobs[digest]
+	if !ok {
+		return ""
+	}
+	return "/blobs/" + blob.Algorithm + "/" + blob.Encoded
 }
 
 func (l *Layout) mark(desc descriptor, role string) {

@@ -60,6 +60,7 @@ For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the
 ## Keys
 
 - `Tab` / `Shift+Tab`: switch focus forward/backward between visible panes
+- `v`: switch the left pane between raw OCI layout and image graph views
 - `j` / `k`: move down/up in trees or scroll focused preview
 - `Space`: expand/collapse folders in tree panes, or page down in preview panes
 - `Enter` / `l` / `Right`: expand or open in tree panes
@@ -81,6 +82,17 @@ For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the
 - `q`: quit
 
 The bottom line always shows the main key help. Transient messages, search prompts, and export/open results are shown on the line above it.
+
+## Views
+
+Press `v` while the left pane is focused to switch between:
+
+- OCI Layout: the raw archive/directory file layout
+- Image Graph: semantic index, platform, manifest, config, layer, and artifact relationships
+
+The Image Graph view is useful for multi-architecture images because it groups blobs under the manifests and platforms that reference them without changing the raw OCI layout view.
+
+Graph nodes are expanded by default. Press `Ctrl+Space` in Image Graph view to expand or collapse all graph nodes.
 
 ## Preview Behavior
 

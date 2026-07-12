@@ -25,6 +25,13 @@ const (
 	focusInnerPreview
 )
 
+type leftViewMode int
+
+const (
+	leftViewOCI leftViewMode = iota
+	leftViewGraph
+)
+
 type Model struct {
 	layout *oci.Layout
 
@@ -37,12 +44,16 @@ type Model struct {
 	zoomTarget     focus
 	overlayMessage string
 
-	ociRows      []treeRow
-	selectedOCI  int
-	ociExpanded  map[string]bool
-	searchMode   bool
-	searchTarget focus
-	searchQuery  string
+	ociRows       []treeRow
+	selectedOCI   int
+	ociExpanded   map[string]bool
+	leftView      leftViewMode
+	graphRows     []graphRow
+	selectedGraph int
+	graphExpanded map[string]bool
+	searchMode    bool
+	searchTarget  focus
+	searchQuery   string
 
 	preview *preview.Preview
 
@@ -65,7 +76,7 @@ type layerLoadedMsg struct {
 	err   error
 }
 
-const helpText = "Tab/Shift+Tab focus | j/k move | Space toggle/page | f follow/page | z zoom | / search | p pretty | w wrap | # lines | e export | q quit"
+const helpText = "Tab/Shift+Tab focus | v view | j/k move | Space toggle/page | f follow/page | z zoom | / search | p pretty | e export | q quit"
 
 type treeRow struct {
 	node  *oci.Node
@@ -74,6 +85,11 @@ type treeRow struct {
 
 type layerRow struct {
 	entry *layer.Entry
+	depth int
+}
+
+type graphRow struct {
+	node  *oci.GraphNode
 	depth int
 }
 
@@ -90,6 +106,7 @@ func New(layout *oci.Layout) Model {
 	m := Model{
 		layout:              layout,
 		ociExpanded:         map[string]bool{"/": true, "/blobs": true, "/blobs/sha256": true},
+		graphExpanded:       map[string]bool{},
 		layerCache:          map[string]*layer.Layer{},
 		layerExpanded:       map[string]bool{"/": true},
 		chiselPreviewCache:  map[string]*preview.Preview{},
@@ -98,6 +115,8 @@ func New(layout *oci.Layout) Model {
 		maxAutoPreviewBytes: maxAutoTextPreviewBytesFromEnv(),
 	}
 	m.rebuildOCIRows()
+	m.expandAllGraphNodes()
+	m.rebuildGraphRows()
 	m.selectOCI(0)
 	return m
 }
@@ -165,7 +184,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.layerCache[msg.path] = msg.layer
-		if m.selectedOCINodePath() != msg.path {
+		if m.selectedBlobPath() != msg.path {
 			m.message = "Opened " + msg.path
 			return m, nil
 		}
@@ -192,7 +211,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "?":
-			m.message = "Keys: Tab/Shift+Tab focus, Space toggle/page, f follow symlink or page preview, z zoom, q exits zoom/quits, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
+			m.message = "Keys: Tab/Shift+Tab focus, v switch OCI/graph view, Ctrl+Space expand/collapse graph, Space toggle/page, f follow symlink or page preview, z zoom, q exits zoom/quits, Enter open, h/l collapse/expand or horizontal scroll, / search, p pretty, w wrap, # lines, e export"
 		case "tab":
 			if m.zoomed {
 				m.overlayMessage = "Press z again to exit zoom state."
@@ -222,6 +241,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleLineNumbers()
 		case "z":
 			m.toggleZoom()
+		case "v":
+			m.toggleLeftView()
 		case "e":
 			m.exportSelected()
 		case "enter":
@@ -256,6 +277,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.scrollPreview(m.previewHeight())
 			}
+		case "ctrl+@", "ctrl+space":
+			m.toggleAllGraphNodes()
 		case "f":
 			if m.focus == focusLayer {
 				m.followLayerLink()
@@ -341,6 +364,17 @@ func (m *Model) applySearch() {
 	}
 	switch m.searchTarget {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			for i, row := range m.graphRows {
+				if strings.Contains(strings.ToLower(row.node.Label), q) || strings.Contains(strings.ToLower(row.node.Digest), q) || strings.Contains(strings.ToLower(row.node.Platform), q) {
+					m.selectGraph(i)
+					m.message = "matched " + row.node.Label
+					return
+				}
+			}
+			m.message = "no graph match for " + m.searchQuery
+			return
+		}
 		for i, row := range m.ociRows {
 			if strings.Contains(strings.ToLower(oci.DisplayName(row.node)), q) || strings.Contains(strings.ToLower(row.node.Path), q) {
 				m.selectOCI(i)
@@ -385,6 +419,125 @@ func (m *Model) rebuildOCIRows() {
 	walk(m.layout.Root, 0)
 }
 
+func (m *Model) rebuildGraphRows() {
+	m.graphRows = nil
+	var walk func(*oci.GraphNode, int)
+	walk = func(n *oci.GraphNode, depth int) {
+		if n == nil {
+			return
+		}
+		m.graphRows = append(m.graphRows, graphRow{node: n, depth: depth})
+		if m.graphExpanded[m.graphKey(n)] {
+			for _, child := range n.Children {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(m.layout.GraphRoot, 0)
+}
+
+func (m *Model) graphKey(n *oci.GraphNode) string {
+	if n == nil {
+		return ""
+	}
+	if n.Digest != "" {
+		return n.Kind.String() + ":" + n.Digest + ":" + n.Label
+	}
+	return n.Kind.String() + ":" + n.Label
+}
+
+func (m *Model) toggleLeftView() {
+	if m.focus != focusOCI || m.zoomed {
+		return
+	}
+	if m.leftView == leftViewOCI {
+		m.leftView = leftViewGraph
+		m.rebuildGraphRows()
+		m.selectGraph(m.selectedGraph)
+		m.message = "left pane: image graph"
+		return
+	}
+	m.leftView = leftViewOCI
+	m.selectOCI(m.selectedOCI)
+	m.message = "left pane: OCI layout"
+}
+
+func (m *Model) expandAllGraphNodes() {
+	var walk func(*oci.GraphNode)
+	walk = func(n *oci.GraphNode) {
+		if n == nil {
+			return
+		}
+		if len(n.Children) > 0 {
+			m.graphExpanded[m.graphKey(n)] = true
+			for _, child := range n.Children {
+				walk(child)
+			}
+		}
+	}
+	walk(m.layout.GraphRoot)
+}
+
+func (m *Model) collapseAllGraphNodes() {
+	m.graphExpanded = map[string]bool{}
+	if m.layout.GraphRoot != nil {
+		m.graphExpanded[m.graphKey(m.layout.GraphRoot)] = true
+	}
+}
+
+func (m *Model) allGraphNodesExpanded() bool {
+	all := true
+	var walk func(*oci.GraphNode)
+	walk = func(n *oci.GraphNode) {
+		if n == nil || !all {
+			return
+		}
+		if len(n.Children) > 0 {
+			if !m.graphExpanded[m.graphKey(n)] {
+				all = false
+				return
+			}
+			for _, child := range n.Children {
+				walk(child)
+			}
+		}
+	}
+	walk(m.layout.GraphRoot)
+	return all
+}
+
+func (m *Model) toggleAllGraphNodes() {
+	if m.focus != focusOCI || m.leftView != leftViewGraph || m.zoomed {
+		m.message = "Ctrl+Space toggles graph expansion in image graph view"
+		return
+	}
+	selected := (*oci.GraphNode)(nil)
+	if len(m.graphRows) > 0 && m.selectedGraph >= 0 && m.selectedGraph < len(m.graphRows) {
+		selected = m.graphRows[m.selectedGraph].node
+	}
+	if m.allGraphNodesExpanded() {
+		m.collapseAllGraphNodes()
+		m.message = "collapsed graph nodes"
+	} else {
+		m.expandAllGraphNodes()
+		m.message = "expanded all graph nodes"
+	}
+	m.rebuildGraphRows()
+	m.selectGraphVisibleOrAncestor(selected)
+}
+
+func (m *Model) selectGraphVisibleOrAncestor(target *oci.GraphNode) {
+	if target == nil {
+		m.selectGraph(0)
+		return
+	}
+	if idx := m.indexOfGraph(target); idx >= 0 {
+		m.selectGraph(idx)
+		return
+	}
+	m.selectGraph(0)
+}
+
 func (m *Model) rebuildLayerRows() {
 	m.layerRows = nil
 	if m.currentLayer == nil {
@@ -415,6 +568,36 @@ func (m *Model) selectOCI(i int) {
 	m.selectedOCI = i
 	node := m.ociRows[i].node
 	m.selectOCINode(node, false)
+}
+
+func (m *Model) selectGraph(i int) {
+	if len(m.graphRows) == 0 {
+		return
+	}
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(m.graphRows) {
+		i = len(m.graphRows) - 1
+	}
+	m.selectedGraph = i
+	n := m.graphRows[i].node
+	if n == nil {
+		return
+	}
+	if n.BlobPath != "" {
+		m.selectedOCI = m.indexOfOCI(n.BlobPath)
+		m.selectOCINode(m.layout.Files[n.BlobPath], false)
+		return
+	}
+	text := strings.Join(n.Summary, "\n")
+	if text == "" {
+		text = n.Label
+	}
+	p := preview.New(n.Label, []byte(text), false)
+	m.currentLayer = nil
+	m.innerPreview = nil
+	m.preview = &p
 }
 
 func (m *Model) selectOCINode(node *oci.Node, explicit bool) {
@@ -521,6 +704,16 @@ func (m *Model) selectedOCINodePath() string {
 		return ""
 	}
 	return m.ociRows[m.selectedOCI].node.Path
+}
+
+func (m *Model) selectedBlobPath() string {
+	if m.leftView == leftViewGraph {
+		if len(m.graphRows) > 0 && m.selectedGraph >= 0 && m.selectedGraph < len(m.graphRows) {
+			return m.graphRows[m.selectedGraph].node.BlobPath
+		}
+		return ""
+	}
+	return m.selectedOCINodePath()
 }
 
 func blobMediaType(n *oci.Node) string {
@@ -668,6 +861,10 @@ func (m *Model) moveFocus(visible []focus, delta int) {
 func (m *Model) openOrExpand() {
 	switch m.focus {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			m.openOrExpandGraph()
+			return
+		}
 		n := m.ociRows[m.selectedOCI].node
 		if n.IsDir {
 			m.ociExpanded[n.Path] = true
@@ -684,9 +881,32 @@ func (m *Model) openOrExpand() {
 	}
 }
 
+func (m *Model) openOrExpandGraph() {
+	if len(m.graphRows) == 0 {
+		return
+	}
+	n := m.graphRows[m.selectedGraph].node
+	if n == nil {
+		return
+	}
+	if len(n.Children) > 0 {
+		m.graphExpanded[m.graphKey(n)] = true
+		m.rebuildGraphRows()
+		m.selectGraphVisibleOrAncestor(n)
+		return
+	}
+	if n.BlobPath != "" {
+		m.selectOCINode(m.layout.Files[n.BlobPath], true)
+	}
+}
+
 func (m *Model) collapse() {
 	switch m.focus {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			m.collapseGraph()
+			return
+		}
 		n := m.ociRows[m.selectedOCI].node
 		if n.IsDir && m.ociExpanded[n.Path] {
 			m.ociExpanded[n.Path] = false
@@ -705,9 +925,36 @@ func (m *Model) collapse() {
 	}
 }
 
+func (m *Model) collapseGraph() {
+	if len(m.graphRows) == 0 {
+		return
+	}
+	n := m.graphRows[m.selectedGraph].node
+	if n == nil {
+		return
+	}
+	key := m.graphKey(n)
+	if len(n.Children) > 0 && m.graphExpanded[key] {
+		m.graphExpanded[key] = false
+		m.rebuildGraphRows()
+		m.selectGraphVisibleOrAncestor(n)
+		return
+	}
+	for i := m.selectedGraph - 1; i >= 0; i-- {
+		if m.graphRows[i].depth < m.graphRows[m.selectedGraph].depth {
+			m.selectGraph(i)
+			return
+		}
+	}
+}
+
 func (m *Model) toggleExpandCollapse() {
 	switch m.focus {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			m.toggleGraphExpandCollapse()
+			return
+		}
 		if len(m.ociRows) == 0 {
 			return
 		}
@@ -736,6 +983,21 @@ func (m *Model) toggleExpandCollapse() {
 	}
 }
 
+func (m *Model) toggleGraphExpandCollapse() {
+	if len(m.graphRows) == 0 {
+		return
+	}
+	n := m.graphRows[m.selectedGraph].node
+	if n == nil || len(n.Children) == 0 {
+		m.message = "selected graph item has no children"
+		return
+	}
+	key := m.graphKey(n)
+	m.graphExpanded[key] = !m.graphExpanded[key]
+	m.rebuildGraphRows()
+	m.selectGraphVisibleOrAncestor(n)
+}
+
 func toggleMessage(path string, expanded bool) string {
 	if expanded {
 		return "expanded " + path
@@ -746,6 +1008,10 @@ func toggleMessage(path string, expanded bool) string {
 func (m *Model) move(delta int) {
 	switch m.focus {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			m.selectGraph(m.selectedGraph + delta)
+			return
+		}
 		m.selectOCI(m.selectedOCI + delta)
 	case focusLayer:
 		m.selectLayer(m.selectedLayerRow + delta)
@@ -757,6 +1023,10 @@ func (m *Model) move(delta int) {
 func (m *Model) goTop() {
 	switch m.focus {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			m.selectGraph(0)
+			return
+		}
 		m.selectOCI(0)
 	case focusLayer:
 		m.selectLayer(0)
@@ -774,6 +1044,10 @@ func (m *Model) goTop() {
 func (m *Model) goBottom() {
 	switch m.focus {
 	case focusOCI:
+		if m.leftView == leftViewGraph {
+			m.selectGraph(len(m.graphRows) - 1)
+			return
+		}
 		m.selectOCI(len(m.ociRows) - 1)
 	case focusLayer:
 		m.selectLayer(len(m.layerRows) - 1)
@@ -919,6 +1193,9 @@ func (m *Model) exportSelected() {
 }
 
 func (m *Model) renderOCI(width, height int) string {
+	if m.leftView == leftViewGraph {
+		return m.renderGraph(width, height)
+	}
 	contentW := contentWidth(width)
 	contentH := contentHeight(height)
 	lines := []string{headerStyle.Render("OCI Files")}
@@ -937,6 +1214,28 @@ func (m *Model) renderOCI(width, height int) string {
 			line = selectStyle.Render(line)
 		} else if i == 0 {
 			_ = i
+		}
+		lines = append(lines, fixedLine(line, contentW))
+	}
+	return pane(m.focus == focusOCI, width, height).Render(fixedBlock(lines, contentW, contentH))
+}
+
+func (m *Model) renderGraph(width, height int) string {
+	contentW := contentWidth(width)
+	contentH := contentHeight(height)
+	lines := []string{headerStyle.Render("Image Graph")}
+	for _, row := range visibleGraphRows(m.graphRows, m.selectedGraph, contentH-1) {
+		prefix := strings.Repeat("  ", row.depth)
+		marker := "  "
+		if len(row.node.Children) > 0 {
+			marker = "▸ "
+			if m.graphExpanded[m.graphKey(row.node)] {
+				marker = "▾ "
+			}
+		}
+		line := prefix + marker + row.node.Label
+		if m.indexOfGraph(row.node) == m.selectedGraph {
+			line = selectStyle.Render(line)
 		}
 		lines = append(lines, fixedLine(line, contentW))
 	}
@@ -1148,6 +1447,20 @@ func visibleLayerRows(rows []layerRow, selected, count int) []layerRow {
 	return rows[start : start+count]
 }
 
+func visibleGraphRows(rows []graphRow, selected, count int) []graphRow {
+	if count < 1 || len(rows) <= count {
+		return rows
+	}
+	start := selected - count/2
+	if start < 0 {
+		start = 0
+	}
+	if start+count > len(rows) {
+		start = len(rows) - count
+	}
+	return rows[start : start+count]
+}
+
 func (m *Model) indexOfOCI(p string) int {
 	for i, row := range m.ociRows {
 		if row.node.Path == p {
@@ -1164,6 +1477,15 @@ func (m *Model) indexOfLayer(p string) int {
 		}
 	}
 	return 0
+}
+
+func (m *Model) indexOfGraph(target *oci.GraphNode) int {
+	for i, row := range m.graphRows {
+		if row.node == target {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Model) previewHeight() int {
