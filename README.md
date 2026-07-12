@@ -1,30 +1,37 @@
 # OCI-Layout Archive Visualizer
 
-`olav` is the command-line interface for OCI-Layout Archive Visualizer.
+`olav` is a terminal UI for inspecting OCI image layouts, OCI layout archives, remote registry images, and images from a local Docker daemon.
 
-It accepts an OCI layout directory or tar archive and opens a split-pane TUI for browsing layout files, previewing text/JSON blobs, inspecting layer tarballs, and exporting selected files.
-
-Top-level JSON is prettified by default. Text previews wrap and show line numbers by default. Layer tarballs are opened asynchronously and show an extraction overlay while they are being indexed.
+It keeps the raw OCI layout visible, adds a semantic image graph for multi-platform images, previews text and JSON blobs, inspects layer tarballs, and exports selected files.
 
 ![OCI-Layout Archive Visualizer preview](assets/preview.png)
 
 ## Installation
 
 ```sh
-go install github.com/canonical/olav/cmd/olav@latest
+go install github.com/zhijie-yang/olav/cmd/olav@latest
 ```
+
+For local development:
 
 ```sh
-go run ./cmd/olav <oci-layout-dir-or-tarball>
+go run ./cmd/olav <source>
 ```
 
-Image sources must use explicit transport prefixes:
+## Usage
+
+Local OCI inputs:
 
 ```sh
 olav ./oci-layout
 olav ./oci-layout.tar
 olav oci:./oci-layout
 olav oci-archive:./oci-layout.tar
+```
+
+Remote registry and Docker daemon inputs require explicit transport prefixes:
+
+```sh
 olav docker://ubuntu:24.04
 olav docker://ubuntu@sha256:<digest>
 olav --platform linux/amd64 docker://ubuntu:24.04
@@ -33,17 +40,21 @@ olav docker-daemon:ubuntu:24.04
 olav docker-daemon:repo/image@sha256:<digest>
 ```
 
-Use `--resolve-only` to resolve/cache/load an input without starting the TUI. This is useful for CI or validating source access:
+Use `--resolve-only` to resolve, cache, and validate an input without starting the TUI:
 
 ```sh
 olav --resolve-only docker://ubuntu:24.04
 ```
 
-For `docker://` sources, `olav` pulls the current machine platform by default. Use `--platform os/arch` or `--platform os/arch/variant` to select a specific platform. Use `--platform all` to pull and inspect the full multi-platform image index. `--platform` is rejected for `docker-daemon:` sources.
+For `docker://` sources, `olav` pulls the current machine platform by default. Use `--platform os/arch` or `--platform os/arch/variant` to select a platform. Use `--platform all` to pull and inspect the full multi-platform image index. `--platform` is rejected for `docker-daemon:` sources.
+
+Docker `docker save` archives are intentionally not supported. Convert them to OCI layout first, for example with `skopeo`.
+
+## Cache And Auth
 
 Remote and daemon images are copied into the cache as OCI layouts before opening. The cache uses `$XDG_CACHE_HOME/olav` or `~/.cache/olav`.
 
-During image copy, `olav` prints simple progress information to stderr before entering the TUI.
+During image copy, `olav` prints progress information to stderr before entering the TUI.
 
 Authentication uses Docker and containers auth-file locations:
 
@@ -55,7 +66,20 @@ Authentication uses Docker and containers auth-file locations:
 
 If authentication fails, `olav` prints a hint pointing to these paths. Login with `docker`, `podman`, or `skopeo` before retrying private images.
 
-For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the daemon's local `RepoDigests` and copies the matching local image ID. The digest-pinned image must already exist locally. Docker daemon export can reconstruct manifests, so remote registry manifest bytes are not always preserved byte-for-byte through daemon sources; use `docker://name@sha256:<digest>` when the exact registry manifest digest must be inspected.
+For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the daemon's local `RepoDigests` and copies the matching local image. The digest-pinned image must already exist locally. Docker daemon export can reconstruct manifests, so remote registry manifest bytes are not always preserved byte-for-byte through daemon sources. Use `docker://name@sha256:<digest>` when the exact registry manifest digest must be inspected.
+
+## Views
+
+Press `v` while the left pane is focused to switch between:
+
+- OCI Layout: the raw archive/directory file layout
+- Image Graph: semantic index, platform, manifest, config, layer, and artifact relationships
+
+The Image Graph view is useful for multi-architecture images because it groups blobs under the manifests and platforms that reference them without changing the raw OCI layout view. It also labels common attestation manifests and includes platform/annotation summaries where available.
+
+Graph nodes are expanded by default. Press `Ctrl+Space` in Image Graph view to expand or collapse all graph nodes.
+
+The raw OCI Layout view remains a faithful file tree, but blob names include graph-derived role and platform hints when available.
 
 ## Keys
 
@@ -63,6 +87,7 @@ For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the
 - `v`: switch the left pane between raw OCI layout and image graph views
 - `j` / `k`: move down/up in trees or scroll focused preview
 - `Space`: expand/collapse folders in tree panes, or page down in preview panes
+- `Ctrl+Space`: expand/collapse all graph nodes in Image Graph view
 - `Enter` / `l` / `Right`: expand or open in tree panes
 - `h` / `Left`: collapse in tree panes
 - `/`: search focused pane
@@ -79,28 +104,15 @@ For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the
 - `h` / `l` or `Left` / `Right`: horizontal scroll when preview wrapping is disabled
 - `0` / `$`: jump to first/last preview column when preview wrapping is disabled
 - `?`: show help
-- `q`: quit
+- `q`: quit, or exit preview zoom mode when zoomed
 
 The bottom line always shows the main key help. Transient messages, search prompts, and export/open results are shown on the line above it.
-
-## Views
-
-Press `v` while the left pane is focused to switch between:
-
-- OCI Layout: the raw archive/directory file layout
-- Image Graph: semantic index, platform, manifest, config, layer, and artifact relationships
-
-The Image Graph view is useful for multi-architecture images because it groups blobs under the manifests and platforms that reference them without changing the raw OCI layout view. It also labels common attestation manifests and includes platform/annotation summaries where available.
-
-Graph nodes are expanded by default. Press `Ctrl+Space` in Image Graph view to expand or collapse all graph nodes.
-
-The raw OCI Layout view remains a faithful file tree, but blob names include graph-derived role and platform hints when available.
 
 ## Preview Behavior
 
 - JSON can be toggled between raw and pretty views with `p`.
 - Pretty JSON is syntax-colored.
-- Top-level JSON starts in pretty mode.
+- Top-level JSON starts in pretty mode when it is small enough to format cheaply.
 - Text files inside layer tarballs start in raw mode.
 - Text previews wrap by default and can be toggled with `w`.
 - Text previews show line numbers by default and can be toggled with `#`.
@@ -131,6 +143,8 @@ The selected OCI blob remains highlighted while extraction is running. Once inde
 - A third preview pane when the selected layer entry is a text file
 
 Non-text files inside layer tarballs show metadata only.
+
+## Performance Controls
 
 By default, `olav` automatically opens layer tarballs when they are selected only if the OCI layout has at most three layer tarballs. This avoids expensive accidental extraction when inspecting large multi-platform images. Set `MAX_NUM_AUTO_TARBALL_EXTRACTION` to change the threshold:
 
@@ -168,9 +182,9 @@ Layer file hierarchy is preserved.
 
 - OCI image layout directories
 - OCI image layout tar archives
+- Remote registry images through `docker://`
+- Local Docker daemon images through `docker-daemon:`
 - Layer blobs compressed as plain tar, gzip, or zstd
-
-Docker `docker save` archives are intentionally not supported. Convert them to OCI layout first, for example with `skopeo`.
 
 ## Maintenance
 
