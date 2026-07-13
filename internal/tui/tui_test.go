@@ -610,6 +610,52 @@ func TestTabWhileZoomedShowsOverlay(t *testing.T) {
 	assertViewFits(t, view, m.width, m.height)
 }
 
+func TestZoomOverlayDismissesOnNextKeyAndKeyStillWorks(t *testing.T) {
+	m := New(simpleLayoutWithData([]byte(strings.Repeat("line\n", 40))))
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	m.toggleZoom()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.overlayMessage == "" {
+		t.Fatal("expected zoom overlay after tab")
+	}
+	before := m.preview.Scroll
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	m = updated.(Model)
+	if m.overlayMessage != "" {
+		t.Fatalf("expected overlay to be dismissed, got %q", m.overlayMessage)
+	}
+	if m.preview.Scroll <= before {
+		t.Fatalf("expected key action to still run, before=%d after=%d", before, m.preview.Scroll)
+	}
+}
+
+func TestZoomOverlayDismissesWhenTogglingWrap(t *testing.T) {
+	m := New(simpleLayout())
+	m.width = 80
+	m.height = 16
+	m.selectOCI(1)
+	m.focus = focusPreview
+	m.toggleZoom()
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	if m.overlayMessage == "" {
+		t.Fatal("expected zoom overlay after tab")
+	}
+	before := m.preview.WrapText
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	m = updated.(Model)
+	if m.overlayMessage != "" {
+		t.Fatalf("expected overlay to be dismissed, got %q", m.overlayMessage)
+	}
+	if m.preview.WrapText == before {
+		t.Fatal("expected w to toggle wrapping while dismissing overlay")
+	}
+}
+
 func TestQWhileZoomedExitsZoomWithoutQuitting(t *testing.T) {
 	m := New(simpleLayout())
 	m.width = 80
