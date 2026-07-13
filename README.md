@@ -9,7 +9,7 @@ It keeps the raw OCI layout visible, adds a semantic image graph for multi-platf
 ## Installation
 
 ```sh
-go install github.com/zhijie-yang/olav/cmd/olav@latest
+go install github.com/canonical/olav/cmd/olav@latest
 ```
 
 For local development:
