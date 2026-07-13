@@ -55,6 +55,34 @@ func safeDigest(digest string) string {
 	return strings.ReplaceAll(digest, ":", "-")
 }
 
+func cachePathForDigest(digest string) (string, error) {
+	root, err := cacheRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "images", safeDigest(digest)), nil
+}
+
+func cachedLayoutForDigest(digest string) (string, bool, error) {
+	dir, err := cachePathForDigest(digest)
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := os.Stat(filepath.Join(dir, "oci-layout")); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if _, err := os.Stat(filepath.Join(dir, "index.json")); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return dir, true, nil
+}
+
 func writeMetadata(dir string, metadata cacheMetadata) error {
 	metadata.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(metadata, "", "  ")

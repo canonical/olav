@@ -19,7 +19,10 @@ jobs:
           cache: true
       - run: go build -o ./olav ./cmd/olav
       - name: Resolve docker registry image
-        run: ./olav --resolve-only "docker://${TEST_IMAGE}"
+        run: |
+          ./olav --resolve-only "docker://${TEST_IMAGE}"
+          ./olav --resolve-only "docker://${TEST_IMAGE}" 2>&1 | tee /tmp/olav-cache-check.txt
+          grep -q "using cached" /tmp/olav-cache-check.txt
       - name: Resolve docker daemon image
         run: |
           docker pull "${TEST_IMAGE}"

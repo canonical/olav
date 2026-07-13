@@ -21,6 +21,20 @@ import (
 )
 
 func copyToCache(ctx context.Context, sourceRef string, platform Platform, progress io.Writer) (*Resolved, error) {
+	if strings.HasPrefix(sourceRef, "docker://") {
+		digest, err := resolveRemoteCacheDigest(ctx, sourceRef, platform)
+		if err != nil {
+			return nil, withAuthHint(sourceRef, err)
+		}
+		if cached, ok, err := cachedLayoutForDigest(digest); err != nil {
+			return nil, err
+		} else if ok {
+			if progress != nil {
+				fmt.Fprintf(progress, "olav: using cached %s from %s\n", sourceRef, cached)
+			}
+			return &Resolved{DisplayName: sourceRef, LocalPath: cached, Cached: true}, nil
+		}
+	}
 	tmpDir, err := makeTempLayoutDir()
 	if err != nil {
 		return nil, err
@@ -58,6 +72,37 @@ func copyToCache(ctx context.Context, sourceRef string, platform Platform, progr
 		fmt.Fprintf(progress, "olav: cached %s as %s (%s)\n", sourceRef, finalDir, digest)
 	}
 	return &Resolved{DisplayName: sourceRef, LocalPath: finalDir, Cached: true}, nil
+}
+
+func resolveRemoteCacheDigest(ctx context.Context, sourceRef string, platform Platform) (string, error) {
+	refString := strings.TrimPrefix(sourceRef, "docker://")
+	ref, err := name.ParseReference(refString)
+	if err != nil {
+		return "", err
+	}
+	options := []remote.Option{
+		remote.WithContext(ctx),
+		remote.WithAuthFromKeychain(authKeychain()),
+	}
+	if !platform.All {
+		options = append(options, remote.WithPlatform(v1.Platform{OS: platform.OS, Architecture: platform.Architecture, Variant: platform.Variant}))
+	}
+	desc, err := remote.Get(ref, options...)
+	if err != nil {
+		return "", err
+	}
+	if platform.All || !desc.MediaType.IsIndex() {
+		return desc.Digest.String(), nil
+	}
+	img, err := desc.Image()
+	if err != nil {
+		return "", err
+	}
+	digest, err := img.Digest()
+	if err != nil {
+		return "", err
+	}
+	return digest.String(), nil
 }
 
 func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Platform, progress io.Writer) error {

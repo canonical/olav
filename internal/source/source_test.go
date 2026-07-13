@@ -67,6 +67,31 @@ func TestCacheKeyFromLayout(t *testing.T) {
 	}
 }
 
+func TestCachedLayoutForDigest(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	digest := "sha256:abc"
+	if _, ok, err := cachedLayoutForDigest(digest); err != nil || ok {
+		t.Fatalf("empty cache got ok=%v err=%v", ok, err)
+	}
+	cachePath, err := cachePathForDigest(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cachePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cachePath, "oci-layout"), []byte(`{"imageLayoutVersion":"1.0.0"}`))
+	writeFile(t, filepath.Join(cachePath, "index.json"), []byte(`{"schemaVersion":2,"manifests":[]}`))
+	got, ok, err := cachedLayoutForDigest(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got != cachePath {
+		t.Fatalf("got path=%q ok=%v want path=%q ok=true", got, ok, cachePath)
+	}
+}
+
 func TestAuthHint(t *testing.T) {
 	err := withAuthHint("docker://example.com/private:latest", errors.New("unauthorized: authentication required"))
 	if !strings.Contains(err.Error(), "~/.docker/config.json") || !strings.Contains(err.Error(), "podman") {
