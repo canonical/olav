@@ -1,3 +1,8 @@
+<p align="center">
+   <img src="assets/olav.png" width="250" alt="Olav">
+</p>
+
+
 # OCI-Layout Archive Visualizer
 
 `olav` is a terminal UI for inspecting OCI image layouts, OCI layout archives, remote registry images, and images from a local Docker daemon.
