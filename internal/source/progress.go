@@ -48,6 +48,7 @@ func (c *progressCounter) add(n int64) {
 	c.lastPct = pct
 	c.rendered = true
 	renderProgressLine(c.w, complete, c.total)
+}
 
 func (c *progressCounter) finish() {
 	c.mu.Lock()
