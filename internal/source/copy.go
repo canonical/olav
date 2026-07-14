@@ -138,7 +138,9 @@ func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Plat
 			if progress != nil {
 				fmt.Fprintln(progress, "olav: writing OCI image index...")
 			}
-			return path.AppendIndex(idx, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
+			wrapped, finish := withIndexProgress(idx, progress)
+			defer finish()
+			return path.AppendIndex(wrapped, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
 		}
 		img, err := desc.Image()
 		if err != nil {
@@ -147,7 +149,9 @@ func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Plat
 		if progress != nil {
 			fmt.Fprintln(progress, "olav: writing OCI image...")
 		}
-		return path.AppendImage(img, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
+		wrapped, finish := withImageProgress(img, progress)
+		defer finish()
+		return path.AppendImage(wrapped, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
 	}
 	img, err := remote.Image(ref, options...)
 	if err != nil {
@@ -156,7 +160,9 @@ func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Plat
 	if progress != nil {
 		fmt.Fprintln(progress, "olav: writing OCI image...")
 	}
-	return path.AppendImage(img, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
+	wrapped, finish := withImageProgress(img, progress)
+	defer finish()
+	return path.AppendImage(wrapped, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
 }
 
 func writeDaemonLayout(ctx context.Context, dir, sourceRef string, progress io.Writer) error {
@@ -299,22 +305,4 @@ func (e authEntry) authConfig() (authn.AuthConfig, error) {
 	cfg.Username = username
 	cfg.Password = password
 	return cfg, nil
-}
-
-func renderProgressLine(w io.Writer, complete, total int64) {
-	const width = 24
-	if total <= 0 {
-		fmt.Fprintf(w, "\rolav: copying image blobs...")
-		return
-	}
-	if complete > total {
-		complete = total
-	}
-	filled := int(float64(complete) / float64(total) * width)
-	if filled > width {
-		filled = width
-	}
-	bar := strings.Repeat("=", filled) + strings.Repeat(" ", width-filled)
-	percent := int(float64(complete) / float64(total) * 100)
-	fmt.Fprintf(w, "\rolav: [%s] %3d%%", bar, percent)
 }
