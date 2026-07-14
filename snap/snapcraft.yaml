@@ -1,0 +1,49 @@
+name: olav
+title: OCI-Layout Archive Visualizer
+base: core24
+version: "0.1.0"
+summary: Inspect OCI image layouts in your terminal
+description: |
+  OLAV is a terminal UI for inspecting OCI image layouts, OCI layout
+  archives, remote registry images, and images from a local Docker daemon.
+
+  It displays the raw OCI layout alongside a semantic image graph, previews
+  text and JSON blobs, inspects layer tarballs, and exports selected files.
+license: AGPL-3.0-only
+icon: snap/gui/olav-app.png
+website: https://github.com/canonical/olav
+contact: https://github.com/canonical/olav/issues
+source-code: https://github.com/canonical/olav
+issues: https://github.com/canonical/olav/issues
+
+grade: devel
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  olav:
+    command: bin/olav
+    plugs:
+      - docker
+      - home
+      - network
+      - removable-media
+    environment:
+      DOCKER_CONFIG: $SNAP_USER_COMMON/.docker
+      REGISTRY_AUTH_FILE: $SNAP_USER_COMMON/containers/auth.json
+      XDG_CACHE_HOME: $SNAP_USER_COMMON/.cache
+
+parts:
+  olav:
+    plugin: go
+    source: https://github.com/canonical/olav.git
+    source-type: git
+    source-tag: v0.1.0
+    source-depth: 1
+    build-snaps:
+      - go/1.25/stable
+    build-environment:
+      - CGO_ENABLED: "0"

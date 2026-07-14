@@ -13,6 +13,14 @@ It keeps the raw OCI layout visible, adds a semantic image graph for multi-platf
 
 ## Installation
 
+From the Snap Store:
+
+```sh
+sudo snap install olav
+```
+
+Or install the latest Go release:
+
 ```sh
 go install github.com/canonical/olav/cmd/olav@latest
 ```
@@ -70,6 +78,36 @@ Authentication uses Docker and containers auth-file locations:
 - `~/.config/containers/auth.json`
 
 If authentication fails, `olav` prints a hint pointing to these paths. Login with `docker`, `podman`, or `skopeo` before retrying private images.
+
+### Snap Cache And Auth
+
+The snap keeps its cache under `~/snap/olav/common/.cache/olav` so downloaded images remain available after snap upgrades.
+
+Strict confinement cannot read the host's hidden Docker and containers auth files. Create credentials in the snap's persistent data directory instead:
+
+```sh
+mkdir -p "$HOME/snap/olav/common/.docker"
+DOCKER_CONFIG="$HOME/snap/olav/common/.docker" docker login
+```
+
+For a containers auth file, place it at `~/snap/olav/common/containers/auth.json`. Docker configurations that invoke host credential helpers are not supported inside the strict snap; use a dedicated configuration containing registry credentials or tokens.
+
+Registry access and ordinary, non-hidden files under the home directory are available automatically. Access to removable media and the Docker daemon must be connected explicitly when needed:
+
+```sh
+sudo snap connect olav:removable-media
+sudo snap connect olav:docker
+```
+
+The Snap Store requires publisher approval for the privileged `docker` interface before that connection is available to Store installs.
+
+If Docker itself is installed as a snap, connect directly to its daemon slot:
+
+```sh
+sudo snap connect olav:docker docker:docker-daemon
+```
+
+Strict confinement does not provide access to arbitrary locations such as `/srv`, hidden home directories, nonstandard Unix sockets, or exports outside connected locations.
 
 For `docker-daemon:name@sha256:<digest>`, `olav` resolves the digest through the daemon's local `RepoDigests` and copies the matching local image. The digest-pinned image must already exist locally. Docker daemon export can reconstruct manifests, so remote registry manifest bytes are not always preserved byte-for-byte through daemon sources. Use `docker://name@sha256:<digest>` when the exact registry manifest digest must be inspected.
 
@@ -194,3 +232,25 @@ Layer file hierarchy is preserved.
 ## Maintenance
 
 The repository includes GitHub Actions workflows for unit tests, source integration checks, and daily CodeQL scanning. Renovate is configured to open updates for Go modules and GitHub Actions.
+
+## Snap Packaging
+
+Build the snap locally with:
+
+```sh
+sudo snap install snapcraft --classic
+snapcraft pack
+sudo snap install --dangerous ./olav_*.snap
+```
+
+The recipe pins both `version` and `source-tag` to a GitHub release. Update both values to the same `X.Y.Z` / `vX.Y.Z` release before building a new snap. Build `amd64` and `arm64` revisions natively or with the Snapcraft remote build service:
+
+```sh
+snapcraft remote-build
+```
+
+After reserving the `olav` name and authenticating with the Snap Store, upload tested revisions to `edge` before promoting them to `candidate` and `stable`:
+
+```sh
+snapcraft upload --release=edge olav_*.snap
+```

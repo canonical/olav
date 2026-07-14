@@ -1,0 +1,53 @@
+name: Snap
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths:
+      - '.github/workflows/snap.yml'
+      - 'snap/**'
+  pull_request:
+    paths:
+      - '.github/workflows/snap.yml'
+      - 'snap/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - id: snapcraft
+        uses: snapcore/action-build@v1
+      - name: Check release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SNAP_FILE: ${{ steps.snapcraft.outputs.snap }}
+        run: |
+          snap_version="$(snap info "$SNAP_FILE" | awk '$1 == "version:" {print $2}')"
+          test "$GITHUB_REF_NAME" = "v${snap_version}"
+      - name: Install snap
+        run: sudo snap install --dangerous "${{ steps.snapcraft.outputs.snap }}"
+      - name: Test registry, cache, and home access
+        env:
+          TEST_IMAGE: busybox:1.36
+        run: |
+          first_run="$(olav --resolve-only "docker://${TEST_IMAGE}" 2>&1)"
+          printf '%s\n' "$first_run"
+          grep -q '^loaded ' <<< "$first_run"
+
+          second_run="$(olav --resolve-only "docker://${TEST_IMAGE}" 2>&1)"
+          printf '%s\n' "$second_run"
+          grep -q 'using cached' <<< "$second_run"
+
+          cache_path="$(sed -n 's/^loaded .* from //p' <<< "$first_run" | head -n1)"
+          test -n "$cache_path"
+          cp -a "$cache_path" "$GITHUB_WORKSPACE/snap-smoke-layout"
+          olav --resolve-only "$GITHUB_WORKSPACE/snap-smoke-layout"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: olav-snap-amd64
+          path: ${{ steps.snapcraft.outputs.snap }}
