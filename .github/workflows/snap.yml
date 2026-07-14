@@ -43,7 +43,7 @@ jobs:
           printf '%s\n' "$second_run"
           grep -q 'using cached' <<< "$second_run"
 
-          cache_path="$(sed -n 's/^loaded .* from //p' <<< "$first_run")"
+          cache_path="$(sed -n 's/^loaded .* from //p' <<< "$first_run" | head -n1)"
           test -n "$cache_path"
           cp -a "$cache_path" "$GITHUB_WORKSPACE/snap-smoke-layout"
           olav --resolve-only "$GITHUB_WORKSPACE/snap-smoke-layout"
