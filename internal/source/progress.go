@@ -38,6 +38,9 @@ func (c *progressCounter) add(n int64) {
 		}
 		return
 	}
+	if complete > c.total {
+		complete = c.total
+	}
 	pct := int(float64(complete) / float64(c.total) * 100)
 	if pct == c.lastPct {
 		return
@@ -45,7 +48,6 @@ func (c *progressCounter) add(n int64) {
 	c.lastPct = pct
 	c.rendered = true
 	renderProgressLine(c.w, complete, c.total)
-}
 
 func (c *progressCounter) finish() {
 	c.mu.Lock()
@@ -189,24 +191,32 @@ func indexBlobTotal(idx v1.ImageIndex) int64 {
 	if err != nil {
 		return 0
 	}
-	var total int64
+	var (
+		total  int64
+		failed bool
+	)
 	for _, desc := range m.Manifests {
 		switch {
 		case desc.MediaType.IsIndex():
 			child, err := idx.ImageIndex(desc.Digest)
 			if err != nil {
+				failed = true
 				continue
 			}
 			total += indexBlobTotal(child)
 		case desc.MediaType.IsImage():
 			child, err := idx.Image(desc.Digest)
 			if err != nil {
+				failed = true
 				continue
 			}
 			total += imageBlobTotal(child)
 		default:
 			total += desc.Size
 		}
+	}
+	if failed {
+		return 0
 	}
 	return total
 }
