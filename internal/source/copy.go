@@ -178,7 +178,10 @@ func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Plat
 		}
 	}
 
-	rootDesc.Annotations = map[string]string{"org.opencontainers.image.ref.name": "olav"}
+	if rootDesc.Annotations == nil {
+		rootDesc.Annotations = map[string]string{}
+	}
+	rootDesc.Annotations["org.opencontainers.image.ref.name"] = "olav"
 	if err := path.AppendDescriptor(rootDesc); err != nil {
 		return err
 	}
