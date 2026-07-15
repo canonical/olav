@@ -47,7 +47,7 @@ jobs:
           test -n "$cache_path"
           cp -a "$cache_path" "$GITHUB_WORKSPACE/snap-smoke-layout"
           olav --resolve-only "$GITHUB_WORKSPACE/snap-smoke-layout"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: olav-snap-amd64
           path: ${{ steps.snapcraft.outputs.snap }}
