@@ -159,6 +159,7 @@ func TestResolveRemoteResumesInterruptedPull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rc.Close()
 	full := make([]byte, manifest.Layers[0].Size)
 	if _, err := io.ReadFull(rc, full); err != nil {
 		t.Fatal(err)

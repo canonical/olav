@@ -102,7 +102,24 @@ func (f *blobFetcher) fetchBlob(ctx context.Context, digest v1.Hash, size int64,
 	// resume until the whole layout lands in the cache, in case a later blob
 	// of the same pull is interrupted.
 	if err := os.Link(partial, dst); err != nil {
-		return err
+		// Fall back to copying if hardlinks aren't supported.
+		src, openErr := os.Open(partial)
+		if openErr != nil {
+			return openErr
+		}
+		defer src.Close()
+
+		out, createErr := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if createErr != nil {
+			return createErr
+		}
+		if _, copyErr := io.Copy(out, src); copyErr != nil {
+			_ = out.Close()
+			return copyErr
+		}
+		if closeErr := out.Close(); closeErr != nil {
+			return closeErr
+		}
 	}
 	f.consumed = append(f.consumed, partial)
 	return nil
@@ -243,6 +260,10 @@ func (c *progressCounter) add(n int64) {
 	}
 	complete := c.complete.Add(n)
 	if c.total <= 0 {
+		if c.lastPct.Swap(0) == 0 {
+			return
+		}
+		renderProgressLine(c.w, complete, c.total)
 		return
 	}
 	pct := complete * 100 / c.total
