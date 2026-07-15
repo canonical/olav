@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync/atomic"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -231,97 +229,6 @@ func shortHex(digest v1.Hash) string {
 		return digest.Hex[:12]
 	}
 	return digest.Hex
-}
-
-type countingReader struct {
-	r       io.Reader
-	counter *progressCounter
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.counter.add(int64(n))
-	return n, err
-}
-
-type progressCounter struct {
-	total    int64
-	w        io.Writer
-	complete atomic.Int64
-	lastPct  atomic.Int64
-}
-
-func newProgressCounter(total int64, w io.Writer) *progressCounter {
-	c := &progressCounter{total: total, w: w}
-	c.lastPct.Store(-1)
-	return c
-}
-
-func (c *progressCounter) add(n int64) {
-	if c == nil || c.w == nil || n <= 0 {
-		return
-	}
-	complete := c.complete.Add(n)
-	if c.total <= 0 {
-		if c.lastPct.Swap(0) == 0 {
-			return
-		}
-		renderProgressLine(c.w, complete, c.total)
-		return
-	}
-	pct := complete * 100 / c.total
-	if pct > 100 {
-		pct = 100
-	}
-	if c.lastPct.Swap(pct) == pct {
-		return
-	}
-	renderProgressLine(c.w, complete, c.total)
-}
-
-// sub rolls back bytes that were counted but then discarded, e.g. a resumed
-// partial the server declines to honour. The next add re-renders at the
-// corrected, lower percentage.
-func (c *progressCounter) sub(n int64) {
-	if c == nil || c.w == nil || n <= 0 {
-		return
-	}
-	c.complete.Add(-n)
-	c.lastPct.Store(-1)
-}
-
-func (c *progressCounter) finish() {
-	if c == nil || c.w == nil || c.lastPct.Load() < 0 {
-		return
-	}
-	renderProgressLine(c.w, c.complete.Load(), c.total)
-	fmt.Fprintln(c.w)
-}
-
-func renderProgressLine(w io.Writer, complete, total int64) {
-	const width = 24
-	if total <= 0 {
-		fmt.Fprintf(w, "\rolav: copying image blobs...")
-		return
-	}
-	if complete > total {
-		complete = total
-	}
-	filled := int(float64(complete) / float64(total) * width)
-	if filled > width {
-		filled = width
-	}
-	bar := strings.Repeat("=", filled) + strings.Repeat(" ", width-filled)
-	percent := int(float64(complete) / float64(total) * 100)
-	fmt.Fprintf(w, "\rolav: [%s] %3d%%  %s / %s", bar, percent, formatBytes(complete), formatBytes(total))
-}
-
-func formatBytes(n int64) string {
-	const mib = 1 << 20
-	if n < mib {
-		return fmt.Sprintf("%d B", n)
-	}
-	return fmt.Sprintf("%.1f MiB", float64(n)/mib)
 }
 
 type rawBlob struct {
