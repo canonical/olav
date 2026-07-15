@@ -131,6 +131,7 @@ func (f *blobFetcher) fetchOnce(ctx context.Context, digest v1.Hash, size int64,
 		offset = info.Size()
 	}
 	if size > 0 && offset > size {
+		f.counter.sub(offset)
 		if err := os.Truncate(partial, 0); err != nil {
 			return err
 		}
@@ -157,9 +158,11 @@ func (f *blobFetcher) fetchOnce(ctx context.Context, digest v1.Hash, size int64,
 	case offset > 0 && resp.StatusCode == http.StatusPartialContent:
 	case resp.StatusCode == http.StatusOK:
 		// Server ignored the range request; start over with the full body.
+		f.counter.sub(offset)
 		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
 	case offset > 0 && resp.StatusCode == http.StatusRequestedRangeNotSatisfiable:
 		// Server refuses ranges outright; drop the partial and fetch in full.
+		f.counter.sub(offset)
 		if err := os.Truncate(partial, 0); err != nil {
 			return err
 		}
@@ -274,6 +277,17 @@ func (c *progressCounter) add(n int64) {
 		return
 	}
 	renderProgressLine(c.w, complete, c.total)
+}
+
+// sub rolls back bytes that were counted but then discarded, e.g. a resumed
+// partial the server declines to honour. The next add re-renders at the
+// corrected, lower percentage.
+func (c *progressCounter) sub(n int64) {
+	if c == nil || c.w == nil || n <= 0 {
+		return
+	}
+	c.complete.Add(-n)
+	c.lastPct.Store(-1)
 }
 
 func (c *progressCounter) finish() {

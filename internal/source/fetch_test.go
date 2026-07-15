@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -146,6 +147,29 @@ func TestFetchBlobRestartsWhenRangeIgnored(t *testing.T) {
 	}
 	if !bytes.Equal(got, data) {
 		t.Fatal("restarted blob differs from source")
+	}
+}
+
+func TestFetchBlobRestartDoesNotDoubleCountProgress(t *testing.T) {
+	data, digest := testBlob(t, 4096)
+	backend := &blobServer{data: data, ignoreRange: true}
+	server := httptest.NewServer(backend)
+	defer server.Close()
+
+	f := testFetcher(t, server)
+	f.counter = newProgressCounter(int64(len(data)), io.Discard)
+	partial := filepath.Join(f.partialDir, "sha256-"+digest.Hex+".partial")
+	// Pre-existing partial gets counted, then discarded when the server ignores
+	// the range: those bytes must be rolled back, not double-counted.
+	if err := os.WriteFile(partial, []byte("garbage"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "blob")
+	if err := f.fetchBlob(context.Background(), digest, int64(len(data)), dst); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.counter.complete.Load(); got != int64(len(data)) {
+		t.Fatalf("counter = %d, want %d (resumed bytes double-counted)", got, len(data))
 	}
 }
 
