@@ -63,16 +63,15 @@ func (f *blobFetcher) fetchBlob(ctx context.Context, digest v1.Hash, size int64,
 	if digest.Algorithm != "sha256" {
 		return fmt.Errorf("unsupported digest algorithm %q", digest.Algorithm)
 	}
+	partial := filepath.Join(f.partialDir, digest.Algorithm+"-"+digest.Hex+".partial")
 	if size > 0 {
 		if info, err := os.Stat(dst); err == nil && info.Size() == size {
 			// Best-effort cleanup: the blob is already present in the layout.
-			partial := filepath.Join(f.partialDir, digest.Algorithm+"-"+digest.Hex+".partial")
 			_ = os.Remove(partial)
 			f.counter.add(size)
 			return nil
 		}
 	}
-	partial := filepath.Join(f.partialDir, digest.Algorithm+"-"+digest.Hex+".partial")
 	if info, err := os.Stat(partial); err == nil && info.Size() > 0 {
 		if f.progress != nil {
 			fmt.Fprintf(f.progress, "olav: resuming blob %s at %s\n", digest.Hex[:12], formatBytes(info.Size()))
