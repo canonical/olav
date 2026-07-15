@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/partial"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 )
 
@@ -69,7 +70,7 @@ func (f *blobFetcher) fetchBlob(ctx context.Context, digest v1.Hash, size int64,
 	partial := filepath.Join(f.partialDir, digest.Algorithm+"-"+digest.Hex+".partial")
 	if info, err := os.Stat(partial); err == nil && info.Size() > 0 {
 		if f.progress != nil {
-			fmt.Fprintf(f.progress, "olav: resuming blob %s at %s\n", shortHex(digest), formatBytes(info.Size()))
+			fmt.Fprintf(f.progress, "olav: resuming blob %s at %s\n", digest.Hex[:12], formatBytes(info.Size()))
 		}
 		f.counter.add(info.Size())
 	}
@@ -101,22 +102,8 @@ func (f *blobFetcher) fetchBlob(ctx context.Context, digest v1.Hash, size int64,
 	// of the same pull is interrupted.
 	if err := os.Link(partial, dst); err != nil {
 		// Fall back to copying if hardlinks aren't supported.
-		src, openErr := os.Open(partial)
-		if openErr != nil {
-			return openErr
-		}
-		defer src.Close()
-
-		out, createErr := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-		if createErr != nil {
-			return createErr
-		}
-		if _, copyErr := io.Copy(out, src); copyErr != nil {
-			_ = out.Close()
-			return copyErr
-		}
-		if closeErr := out.Close(); closeErr != nil {
-			return closeErr
+		if err := copyFile(partial, dst); err != nil {
+			return err
 		}
 	}
 	f.consumed = append(f.consumed, partial)
@@ -224,11 +211,21 @@ func isRetryableFetchError(err error) bool {
 	return true
 }
 
-func shortHex(digest v1.Hash) string {
-	if len(digest.Hex) > 12 {
-		return digest.Hex[:12]
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-	return digest.Hex
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 type rawBlob struct {
@@ -282,15 +279,11 @@ func (p *pullPlan) fetchTotal() int64 {
 }
 
 func (p *pullPlan) addImage(img v1.Image) (v1.Descriptor, error) {
+	desc, err := partial.Descriptor(img)
+	if err != nil {
+		return v1.Descriptor{}, err
+	}
 	rawManifest, err := img.RawManifest()
-	if err != nil {
-		return v1.Descriptor{}, err
-	}
-	digest, err := img.Digest()
-	if err != nil {
-		return v1.Descriptor{}, err
-	}
-	mediaType, err := img.MediaType()
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
@@ -302,28 +295,24 @@ func (p *pullPlan) addImage(img v1.Image) (v1.Descriptor, error) {
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
-	p.addRaw(digest, rawManifest)
+	p.addRaw(desc.Digest, rawManifest)
 	p.addRaw(manifest.Config.Digest, rawConfig)
 	for _, layer := range manifest.Layers {
 		p.addFetch(layer.Digest, layer.Size)
 	}
-	return v1.Descriptor{MediaType: mediaType, Digest: digest, Size: int64(len(rawManifest))}, nil
+	return *desc, nil
 }
 
 func (p *pullPlan) addIndex(idx v1.ImageIndex) (v1.Descriptor, error) {
+	desc, err := partial.Descriptor(idx)
+	if err != nil {
+		return v1.Descriptor{}, err
+	}
 	rawManifest, err := idx.RawManifest()
 	if err != nil {
 		return v1.Descriptor{}, err
 	}
-	digest, err := idx.Digest()
-	if err != nil {
-		return v1.Descriptor{}, err
-	}
-	mediaType, err := idx.MediaType()
-	if err != nil {
-		return v1.Descriptor{}, err
-	}
-	p.addRaw(digest, rawManifest)
+	p.addRaw(desc.Digest, rawManifest)
 	manifest, err := idx.IndexManifest()
 	if err != nil {
 		return v1.Descriptor{}, err
@@ -350,5 +339,5 @@ func (p *pullPlan) addIndex(idx v1.ImageIndex) (v1.Descriptor, error) {
 			p.addFetch(child.Digest, child.Size)
 		}
 	}
-	return v1.Descriptor{MediaType: mediaType, Digest: digest, Size: int64(len(rawManifest))}, nil
+	return *desc, nil
 }
