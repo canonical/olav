@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -125,23 +126,26 @@ func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Plat
 	if err != nil {
 		return err
 	}
-	if platform.All {
-		desc, err := remote.Get(ref, options...)
+	desc, err := remote.Get(ref, options...)
+	if err != nil {
+		return err
+	}
+
+	plan := &pullPlan{}
+	var rootDesc v1.Descriptor
+	if platform.All && desc.MediaType.IsIndex() {
+		idx, err := desc.ImageIndex()
 		if err != nil {
 			return err
 		}
-		if desc.MediaType.IsIndex() {
-			idx, err := desc.ImageIndex()
-			if err != nil {
-				return err
-			}
-			if progress != nil {
-				fmt.Fprintln(progress, "olav: writing OCI image index...")
-			}
-			wrapped, finish := withIndexProgress(idx, progress)
-			defer finish()
-			return path.AppendIndex(wrapped, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
+		if progress != nil {
+			fmt.Fprintln(progress, "olav: writing OCI image index...")
 		}
+		rootDesc, err = plan.addIndex(idx)
+		if err != nil {
+			return err
+		}
+	} else {
 		img, err := desc.Image()
 		if err != nil {
 			return err
@@ -149,20 +153,40 @@ func writeRemoteLayout(ctx context.Context, dir, sourceRef string, platform Plat
 		if progress != nil {
 			fmt.Fprintln(progress, "olav: writing OCI image...")
 		}
-		wrapped, finish := withImageProgress(img, progress)
-		defer finish()
-		return path.AppendImage(wrapped, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
+		rootDesc, err = plan.addImage(img)
+		if err != nil {
+			return err
+		}
 	}
-	img, err := remote.Image(ref, options...)
+
+	for _, blob := range plan.raw {
+		if err := path.WriteBlob(blob.digest, io.NopCloser(bytes.NewReader(blob.data))); err != nil {
+			return err
+		}
+	}
+
+	counter := newProgressCounter(plan.fetchTotal(), progress)
+	fetcher, err := newBlobFetcher(ctx, ref, counter, progress)
 	if err != nil {
 		return err
 	}
-	if progress != nil {
-		fmt.Fprintln(progress, "olav: writing OCI image...")
+	defer counter.finish()
+	for _, blob := range plan.fetch {
+		dst := filepath.Join(dir, "blobs", blob.digest.Algorithm, blob.digest.Hex)
+		if err := fetcher.fetchBlob(ctx, blob.digest, blob.size, dst); err != nil {
+			return err
+		}
 	}
-	wrapped, finish := withImageProgress(img, progress)
-	defer finish()
-	return path.AppendImage(wrapped, layout.WithAnnotations(map[string]string{"org.opencontainers.image.ref.name": "olav"}))
+
+	if rootDesc.Annotations == nil {
+		rootDesc.Annotations = map[string]string{}
+	}
+	rootDesc.Annotations["org.opencontainers.image.ref.name"] = "olav"
+	if err := path.AppendDescriptor(rootDesc); err != nil {
+		return err
+	}
+	fetcher.cleanupPartials()
+	return nil
 }
 
 func writeDaemonLayout(ctx context.Context, dir, sourceRef string, progress io.Writer) error {
