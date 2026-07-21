@@ -4,8 +4,8 @@ go 1.25.6
 
 require (
 	github.com/alecthomas/chroma/v3 v3.0.0-alpha.5
-	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/charmbracelet/bubbletea/v2 v2.0.8
+	github.com/charmbracelet/lipgloss/v2 v2.0.5
 	github.com/charmbracelet/x/ansi v0.10.1
 	github.com/google/go-containerregistry v0.21.1
 	github.com/klauspost/compress v1.18.6
