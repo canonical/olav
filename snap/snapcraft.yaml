@@ -16,7 +16,7 @@ contact: https://github.com/canonical/olav/issues
 source-code: https://github.com/canonical/olav
 issues: https://github.com/canonical/olav/issues
 
-grade: devel
+grade: stable
 confinement: strict
 
 platforms:
